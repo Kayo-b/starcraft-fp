@@ -88,6 +88,8 @@ billboards sized from unit-type dimensions; eye height 12 px; FOV 66 degrees.
 ## Known limits
 - The free camera collides with terrain only (not units/buildings/resources); the possessed/FPS unit collides like any StarCraft unit.
 - Walls show one 32-px step from below (upper cliff tiers are not rendered); creep effects and water animation are not drawn.
+- Wall faces use the classic SD terrain art (vr4 + palette): the bottom half of the boundary minitile's image. That is the original
+  game's own face art, at classic resolution; floors stay HD. Where the SD art is blank (space/void), a shaded rock fallback is used.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).
 - Only the main image of each sprite is drawn (no shadows/overlays).
 - Wall faces are one stretched texture row; map-edge walls clamp to the border tile. Flat floor; height levels not used for eye height.

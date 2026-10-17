@@ -54,6 +54,7 @@ public:
 
 	Renderer(state& st, state_functions& fn, Assets& assets, int w, int h, RenderParams p = {})
 		: st_(st), gs_(*st.game), fn_(fn), assets_(assets), W_(w), H_(h), p_(p), tiles_(assets.tiles(gs_.tileset_index)) {
+		assets_.set_tileset(gs_.tileset_index);
 		rebuild_terrain();
 	}
 	int width() const { return W_; }
@@ -240,25 +241,31 @@ private:
 			double bfx, bfy;
 			if (wall_side == 0) { bfx = solid_mx < wall_mx ? solid_mx * kCell + 7.5 : wall_mx * kCell + 0.5; bfy = 0; }
 			else { bfy = solid_my < wall_my ? solid_my * kCell + 7.5 : wall_my * kCell + 0.5; bfx = 0; }
-			// fallback rock tone: average the solid tile's surface band at the boundary column, darkened
+			// SD art for the face: the classic minitile images contain the real wall/ramp face pixels.
+			// The face is the bottom half of the boundary minitile's image on the solid (higher) side.
+			const SdTiles* sd = assets_.sd();
+			int smx = step_up ? wall_mx : prev_mx, smy = step_up ? wall_my : prev_my; // solid minitile
+			size_t s_mt = st_.tiles_mega_tile_index[(size_t)(smy / 4) * gs_.map_tile_width + (smx / 4)];
+			int mtx = smx & 3, mty = smy & 3;
+			// fallback rock tone: average the boundary column of the solid tile's surface, darkened
 			double frr = 0, fgg = 0, fbb = 0; int fn = 0;
 			for (int iy = 0; iy < 96; iy += 8) {
 				uint8_t t[3];
-				if (wall_side == 0) tile_sample(bfx, (solid_my / 4) * 32 + iy / 4.0, t, true);
-				else tile_sample((solid_mx / 4) * 32 + iy / 4.0, bfy, t, true);
+				if (wall_side == 0) tile_sample(smx * kCell + 0.5, (smy / 4) * 32 + iy / 4.0, t, true);
+				else tile_sample((smx / 4) * 32 + iy / 4.0, smy * kCell + 0.5, t, true);
 				frr += t[0]; fgg += t[1]; fbb += t[2]; ++fn;
 			}
 			if (fn) { frr /= fn; fgg /= fn; fbb /= fn; }
 			for (int sy = std::max(0, std::min(r_top, r_bot)); sy <= std::min(H_ - 1, std::max(r_top, r_bot)); ++sy) {
 				double v = (double)(sy - std::min(r_top, r_bot)) / span; // 0 = face top, 1 = face bottom
-				// the face art band: the bottom 32 SD px of the tile image, repeated per 32px of face height
-				double band = std::fmod(v * levels, 1.0);
-				double art = 96.0 + band * 31.0; // SD px within the tile; bottom rows = the wall face
-				uint8_t t[3];
-				if (wall_side == 0) tile_sample(bfx, (solid_my / 4) * 32 + art, t, true);
-				else tile_sample((solid_mx / 4) * 32 + art, bfy, t, true);
-				if (t[0] > 240 && t[1] > 240 && t[2] > 240) { // blank placeholder art: shaded rock in the tile's own tone
-					double gr = 0.55 + 0.25 * (1.0 - band);
+				uint8_t t[3] = {0, 0, 0};
+				if (sd && sd->ok) {
+					int art_x = (int)std::fmod(u, 8.0); if (art_x < 0) art_x += 8;
+					int art_y = 4 + (int)(v * 3.0); // the face hangs in the bottom half of the minitile image
+					sd->texel(s_mt, mtx, mty, art_x, art_y, t);
+				}
+				if (t[0] < 8 && t[1] < 8 && t[2] < 8) { // black placeholder (space/void): shaded rock in the tile's own tone
+					double gr = 0.55 + 0.25 * (1.0 - v);
 					t[0] = (uint8_t)(frr * gr); t[1] = (uint8_t)(fgg * gr); t[2] = (uint8_t)(fbb * gr);
 				}
 				double vshade = 0.62 + 0.38 * (1.0 - v);

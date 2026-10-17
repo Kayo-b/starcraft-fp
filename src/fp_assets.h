@@ -143,6 +143,30 @@ struct NameTable {
 	}
 };
 
+// Classic SD terrain art: per-minitile 8x8 images (vr4) with the tileset palette (wpe), indexed per megatile by vx4ex.
+// This is exactly what the original renderer draws; the wall faces and ramps are painted into these images.
+struct SdTiles {
+	std::vector<uint8_t> vx4, vr4, wpe;
+	bool ok = false;
+	void load(std::vector<uint8_t> vx4d, std::vector<uint8_t> vr4d, std::vector<uint8_t> wped) {
+		vx4 = std::move(vx4d); vr4 = std::move(vr4d); wpe = std::move(wped);
+		ok = vr4.size() >= 64 && wpe.size() >= 1024 && vx4.size() >= 16 * 4;
+	}
+	// minitile image index for megatile `mt`, minitile (mx,my) within it
+	uint32_t image_of(size_t mt, int mx, int my) const { return ((const uint32_t*)vx4.data())[mt * 16 + my * 4 + mx]; }
+	// palette colour for an 8-bit art index
+	void palette(uint8_t idx, uint8_t out[3]) const { out[0] = wpe[idx * 4]; out[1] = wpe[idx * 4 + 1]; out[2] = wpe[idx * 4 + 2]; }
+	// art texel (x,y in 0..7) of minitile (mx,my) of megatile `mt`
+	void texel(size_t mt, int mx, int my, int x, int y, uint8_t out[3]) const {
+		if (mt >= vx4.size() / 64) { out[0] = out[1] = out[2] = 0; return; }
+		uint32_t ii = image_of(mt, mx, my);
+		if (ii / 2 >= vr4.size() / 64) { out[0] = out[1] = out[2] = 0; return; }
+		uint8_t idx = vr4[(ii / 2) * 64 + y * 8 + x];
+		if (ii & 1) idx = ~idx; // inverted art
+		palette(idx, out);
+	}
+};
+
 // Lazily loads and caches assets by name from the extracted-data directory.
 class Assets {
 public:
@@ -169,6 +193,22 @@ public:
 		}
 		return it->second.ok ? &it->second : nullptr;
 	}
+	// The classic SD terrain art for this tileset (loaded once).
+	const SdTiles* sd() {
+		auto it = sd_.find(tileset_);
+		if (it == sd_.end()) {
+			static const char* names[8] = {"badlands", "platform", "install", "AshWorld", "Jungle", "Desert", "Ice", "Twilight"};
+			auto sp = std::make_unique<SdTiles>();
+			a_vector<uint8_t> a, b, c;
+			files_(a, bwgame::format("TileSet/%s.vx4ex", names[tileset_ % 8]));
+			files_(b, bwgame::format("TileSet/%s.vr4", names[tileset_ % 8]));
+			files_(c, bwgame::format("TileSet/%s.wpe", names[tileset_ % 8]));
+			sp->load(std::vector<uint8_t>(a.begin(), a.end()), std::vector<uint8_t>(b.begin(), b.end()), std::vector<uint8_t>(c.begin(), c.end()));
+			it = sd_.emplace(tileset_, std::move(sp)).first;
+		}
+		return it->second.get();
+	}
+
 	// Lookup only (never loads), so it is safe to call from render threads after update_units() preloaded the sprites.
 	const AnimSprite* sprite_cached(int image_id) const {
 		auto it = sprites_.find(image_id);
@@ -180,10 +220,12 @@ public:
 		return names_;
 	}
 	dir_loader& files() { return files_; }
+	void set_tileset(int t) { tileset_ = t; }
 private:
-	dir_loader files_;
+	dir_loader files_; int tileset_ = 0;
 	std::map<size_t, std::unique_ptr<HdTiles>> tiles_;
 	std::map<int, AnimSprite> sprites_;
+	std::map<int, std::unique_ptr<SdTiles>> sd_;
 	NameTable names_; bool names_loaded_ = false; std::set<int> missing_;
 public:
 	// Image ids whose anim/main_NNN.anim was missing or unreadable (those units draw as flat player-coloured boxes).
