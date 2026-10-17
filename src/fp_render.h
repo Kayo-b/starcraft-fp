@@ -221,32 +221,46 @@ private:
 				fb[(size_t)sy * W_ + sx] = pack(t[0] * shade, t[1] * shade, t[2] * shade);
 			}
 		}
-		// wall / ramp face: one vertical strip from the solid tile's edge art
+		// wall / ramp face: the wall face of the original game is baked into the BOTTOM rows of the higher tile's
+		// artwork (the cliff hangs over the lower ground in the flat isometric art). Sample that band so the face is
+		// real map art. Blank art (white placeholder frames) falls back to a shaded rock tone.
 		if (hit) {
 			int wc = cell_at(wall_mx, wall_my);
 			bool step_up = wc > 0;                 // walkable higher ground: a ramp step
 			int top_level = step_up ? wc - 1 : level_before + 1; // cliffs show one 32px step from below
+			int levels = std::max(1, top_level - level_before);
 			double hx = cam.x + rdx * perp, hy = cam.y + rdy * perp;
 			double u = wall_side ? hx : hy;        // coordinate along the face
 			int r_bot = (int)std::round(row_at(perp, level_before));
 			int r_top = (int)std::round(row_at(perp, top_level));
 			int span = std::max(1, std::abs(r_bot - r_top));
-			for (int sy = std::max(0, std::min(r_top, r_bot)); sy <= std::min(H_ - 1, std::max(r_top, r_bot)); ++sy) {
-				// The wall face shows the solid tile's art at the boundary, mapped vertically across the whole tile:
-				// the top of the face shows the tile's surface rows, the bottom its edge/shadow rows. That keeps the
-				// face structured instead of one stretched colour.
-				double v = (double)(sy - std::min(r_top, r_bot)) / span; // 0 = face top, 1 = face bottom
+			// the solid (higher) cell whose art carries the face
+			int solid_mx = step_up ? wall_mx : prev_mx, solid_my = step_up ? wall_my : prev_my;
+			// boundary column just inside the solid cell
+			double bfx, bfy;
+			if (wall_side == 0) { bfx = solid_mx < wall_mx ? solid_mx * kCell + 7.5 : wall_mx * kCell + 0.5; bfy = 0; }
+			else { bfy = solid_my < wall_my ? solid_my * kCell + 7.5 : wall_my * kCell + 0.5; bfx = 0; }
+			// fallback rock tone: average the solid tile's surface band at the boundary column, darkened
+			double frr = 0, fgg = 0, fbb = 0; int fn = 0;
+			for (int iy = 0; iy < 96; iy += 8) {
 				uint8_t t[3];
-				if (wall_side == 0) { // vertical face at x = wall_mx*8
-					double fx = step_up ? wall_mx * kCell + 0.5 : wall_mx * kCell - 0.5;
-					double tile_y = std::floor(u / 32.0) * 32.0;
-					tile_sample(fx, tile_y + v * 31.0, t, true);
-				} else {
-					double fy = step_up ? wall_my * kCell + 0.5 : wall_my * kCell - 0.5;
-					double tile_x = std::floor(u / 32.0) * 32.0;
-					tile_sample(tile_x + v * 31.0, fy, t, true);
+				if (wall_side == 0) tile_sample(bfx, (solid_my / 4) * 32 + iy / 4.0, t, true);
+				else tile_sample((solid_mx / 4) * 32 + iy / 4.0, bfy, t, true);
+				frr += t[0]; fgg += t[1]; fbb += t[2]; ++fn;
+			}
+			if (fn) { frr /= fn; fgg /= fn; fbb /= fn; }
+			for (int sy = std::max(0, std::min(r_top, r_bot)); sy <= std::min(H_ - 1, std::max(r_top, r_bot)); ++sy) {
+				double v = (double)(sy - std::min(r_top, r_bot)) / span; // 0 = face top, 1 = face bottom
+				// the face art band: the bottom 32 SD px of the tile image, repeated per 32px of face height
+				double band = std::fmod(v * levels, 1.0);
+				double art = 96.0 + band * 31.0; // SD px within the tile; bottom rows = the wall face
+				uint8_t t[3];
+				if (wall_side == 0) tile_sample(bfx, (solid_my / 4) * 32 + art, t, true);
+				else tile_sample((solid_mx / 4) * 32 + art, bfy, t, true);
+				if (t[0] > 240 && t[1] > 240 && t[2] > 240) { // blank placeholder art: shaded rock in the tile's own tone
+					double gr = 0.55 + 0.25 * (1.0 - band);
+					t[0] = (uint8_t)(frr * gr); t[1] = (uint8_t)(fgg * gr); t[2] = (uint8_t)(fbb * gr);
 				}
-				// vertical shading: faces darken toward their base; side faces are darker than front-facing ones
 				double vshade = 0.62 + 0.38 * (1.0 - v);
 				double shade = std::max(0.3, 1.0 - perp / 1000.0) * (wall_side ? 0.75 : 1.0) * vshade;
 				fb[(size_t)sy * W_ + sx] = pack(t[0] * shade, t[1] * shade, t[2] * shade);
@@ -309,6 +323,7 @@ private:
 			d.x0 = (int)(sxc - d.wpx / 2); d.x1 = (int)(sxc + d.wpx / 2); d.y0 = (int)(base - d.hpx); d.y1 = (int)base; }
 		return d;
 	}
+
 
 	void sprite(const Camera& cam, const UnitView& un, double depth, double sxc, const View& v, uint32_t* fb, int xa, int xb) {
 		Draw d = geometry(cam, un, depth, sxc, v);
