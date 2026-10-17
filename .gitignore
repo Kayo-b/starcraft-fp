@@ -1,0 +1,7 @@
+build/
+out/
+data/
+node_modules/
+*.ppm
+*.png
+mapout/
