@@ -74,46 +74,6 @@ int main(int argc, char** argv) {
 		  check(killed_at >= 0 || hp_after < hp0, "shooting damages the target (HP " + std::to_string(hp0) + " -> " + (killed_at >= 0 ? std::string("dead after ") + std::to_string(killed_at) + " frames" : std::to_string(hp_after)) + ")");
 		  check(f2.shots >= 1, "shots are counted from the weapon cooldown (" + std::to_string(f2.shots) + " shots fired in the duel)");
 		  check(killed_at >= 0 && f2.alive(), "the hero wins the duel and survives (HP " + std::to_string(f2.alive() ? (int)f2.player()->hp.integer_part() : 0) + ")"); }
-		// Direct movement: velocity ramps up, the hero moves where the input points (walls may stop it), collision keeps it
-		// on walkable ground, and shooting still works while moving.
-		{ Game m; m.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f3(m); f3.start(); unit_t* p = f3.player();
-		  f3.drive(1, 0, 0.05); check(f3.speed() > 0 && f3.speed() <= 320, "drive(): velocity ramps toward the speed cap (" + std::to_string((int)f3.speed()) + ")");
-		  // wander in all four directions; total path must be significant and every position standable
-		  double path = 0; int bad = 0; double lastx = p->sprite->position.x, lasty = p->sprite->position.y;
-		  for (int d = 0; d < 4; ++d) for (int i = 0; i < 60; ++i) {
-			double ix = (d == 0) - (d == 2), iy = (d == 1) - (d == 3);
-			f3.drive(ix, iy, 0.05); m.step(); f3.tick();
-			path += std::hypot(p->sprite->position.x - lastx, p->sprite->position.y - lasty);
-			lastx = p->sprite->position.x; lasty = p->sprite->position.y;
-			double r = (p->unit_type->dimensions.from.x + p->unit_type->dimensions.to.x + 1) / 4.0; bool ok = true;
-			for (int dy = -1; dy <= 1 && ok; dy += 2) for (int dx = -1; dx <= 1; dx += 2) {
-				int px = (int)std::floor(p->sprite->position.x + dx * r), py = (int)std::floor(p->sprite->position.y + dy * r);
-				if (px < 0 || py < 0 || px >= (int)m.st().game->map_width || py >= (int)m.st().game->map_height || !m.fn().is_walkable(xy{px, py})) ok = false; }
-			if (!ok) ++bad; }
-		  check(path > 60, "drive(): the hero actually moves (" + std::to_string((int)path) + " px of path)");
-		  check(bad == 0, "drive(): never leaves walkable ground (0 violations)");
-		  // goal steering (RMB): auto-walk toward a point, stopping close to it, without any OpenBW orders.
-		  // Run without stepping the simulation, so no wave can spawn and interfere with the walk. The goal must be
-		  // on open ground (probe the four directions), since a goal inside a wall can never be reached.
-		  { double gx = p->sprite->position.x, gy = p->sprite->position.y; double gxx = 0, gyy = 0; bool found = false;
-			for (int d = 0; d < 4 && !found; ++d) {
-				double ix = (d == 0) - (d == 2), iy = (d == 1) - (d == 3), tx = gx + ix * 80, ty = gy + iy * 80;
-				bool clear = true; for (double t = 0; t <= 80 && clear; t += 8) { int px = (int)(gx + ix * t), py = (int)(gy + iy * t);
-					if (px < 0 || py < 0 || px >= (int)m.st().game->map_width || py >= (int)m.st().game->map_height || !m.fn().is_walkable(xy{px, py})) clear = false; }
-				if (clear) { gxx = tx; gyy = ty; found = true; } }
-			if (found) { f3.go_to(gxx, gyy); int moved = 0;
-				for (int i = 0; i < 60; ++i) { f3.drive(0, 0, 0.05); if (std::hypot(p->sprite->position.x - gxx, p->sprite->position.y - gyy) < 60) { moved = 1; break; } }
-				check(moved, "drive(): goal steering walks toward the RMB point");
-				for (int i = 0; i < 120; ++i) f3.drive(0, 0, 0.05);
-				double dg = std::hypot(p->sprite->position.x - gxx, p->sprite->position.y - gyy);
-				check(dg < 40, "drive(): goal steering stops close to the point (" + std::to_string((int)dg) + " px away)");
-				check(f3.speed() < 40, "drive(): the hero is nearly stopped after arriving (" + std::to_string((int)f3.speed()) + " px/s)"); }
-			else check(false, "drive(): found open ground for the goal point"); }
-		  // firing while moving: spawn a Zergling in range, hold the trigger, drive away slowly; damage must still land
-		  unit_t* z = m.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 90, p->sprite->position.y}, m.enemy());
-		  if (z) { f3.set_trigger(true); int hp0 = (int)z->hp.integer_part();
-			for (int i = 0; i < 60; ++i) { f3.drive(0, 1, 0.02); m.step(); f3.tick(); if (f3.in_range(z)) f3.fire(z); }
-			check((int)z->hp.integer_part() < hp0 || m.fn().unit_dead(z), "drive(): the hero keeps shooting while moving (target HP " + std::to_string(hp0) + " -> " + std::to_string((int)z->hp.integer_part()) + ")"); } }
 		// Death: with no one to defend, a large wave must kill the player and alive() must report it.
 		Game g; g.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps fps(g); fps.start();
 		unit_t* p = fps.player(); for (int i = 0; i < 40; ++i) g.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 20 + (i % 8) * 6, p->sprite->position.y + 20 + (i / 8) * 6}, g.enemy());

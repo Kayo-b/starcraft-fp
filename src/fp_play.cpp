@@ -391,7 +391,7 @@ int main(int argc, char** argv) {
 			K(6.0, "W down", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_W, SDLK_w); });
 			K(7.2, "W up", [&] { push_key(SDL_KEYUP, SDL_SCANCODE_W, SDLK_w); });
 			K(7.6, "check drive", [&] { double d = std::hypot(w->sprite->position.x - st_x0, w->sprite->position.y - st_y0); st.check("W drives the possessed SCV (moved " + std::to_string((int)d) + " px)", d > 40); });
-			K(8.2, "check stopped", [&] { static double px = w->sprite->position.x, py = w->sprite->position.y; st.check("releasing W stops it (velocity " + std::to_string((int)F_().speed()) + ")", F_().speed() < 2.0); });
+			K(8.2, "check stopped", [&] { static double px = w->sprite->position.x, py = w->sprite->position.y; (void)px; (void)py; st.check("releasing W stops it (order id " + std::to_string((int)w->order_type->id) + ")", w->order_type->id == Orders::Stop || w->order_type->id == Orders::Nothing || w->order_type->id == Orders::PlayerGuard); });
 			K(8.3, "build", [&] { G().st().current_minerals[G().owner()] = 500; depots0 = G().count([&](unit_t* u) { return u->owner == G().owner() && u->unit_type->id == UnitTypes::Terran_Supply_Depot; });
 				G().select(w); st.check("found a valid Supply Depot site to aim at", aim_open(w, 110, G().fn().get_unit_type(UnitTypes::Terran_Supply_Depot), gx, gy)); });
 			K(8.5, "B", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_B, SDLK_b); });
@@ -438,8 +438,6 @@ int main(int argc, char** argv) {
 				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-a.rh / 3.0, std::min(a.rh / 3.0, v.cam.pitch - e.motion.yrel * 0.8)); }
 				else if (e.type == SDL_MOUSEBUTTONUP && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = false; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
-				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && e.button.button == SDL_BUTTON_RIGHT) {
-					if (pick.ground) s.fps->go_to(pick.gx, pick.gy); else cmd.say("Aim at the floor"); } // no orders: the hero never lets OpenBW move it
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.live()) {
 					Game& G = *s.game; bool shift = SDL_GetModState() & KMOD_SHIFT;
 					if (e.button.button == SDL_BUTTON_LEFT) {
@@ -500,16 +498,8 @@ int main(int argc, char** argv) {
 			// movement: free camera flies; a possessed unit in game mode is driven with move orders
 			double run_mul = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) ? 3.0 : 1.0, sp = 110.0 * run_mul * dt;
 			double fwd = (keys[SDL_SCANCODE_W] ? sp : 0) - (keys[SDL_SCANCODE_S] ? sp : 0), str = (keys[SDL_SCANCODE_D] ? sp : 0) - (keys[SDL_SCANCODE_A] ? sp : 0);
-			if (s.fps && v.follow) { // FPS hero: direct velocity-based movement (Doom-like), can move and shoot at once
-				const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180;
-				double f = fwd > 0 ? 1 : fwd < 0 ? -1 : 0, sd = str > 0 ? 1 : str < 0 ? -1 : 0;
-				if (f || sd) {
-					double dx = std::cos(h) * f - std::sin(h) * sd, dy = std::sin(h) * f + std::cos(h) * sd, len = std::hypot(dx, dy);
-					s.fps->drive(dx / len, dy / len, dt);
-				} else s.fps->drive(0, 0, dt);
-				moving = false;
-			} else if (s.live() && v.follow) {
-				if (fwd || str) {
+			if (s.live() && v.follow) {
+				if ((fwd || str) && !(s.fps && firing && fire_ready) && (!s.fps || s.fps->alive())) {
 					if (!moving || s.frame() - last_move_order >= 6) {
 						const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180; double f = fwd > 0 ? 1 : fwd < 0 ? -1 : 0, sd = str > 0 ? 1 : str < 0 ? -1 : 0;
 						double dx = std::cos(h) * f - std::sin(h) * sd, dy = std::sin(h) * f + std::cos(h) * sd, len = std::hypot(dx, dy); dx /= len; dy /= len;
@@ -517,7 +507,7 @@ int main(int argc, char** argv) {
 						while (reach > 20 && !s.r->can_stand(ux + dx * reach, uy + dy * reach, 8)) reach -= 20; // shorten the leg until it ends on floor
 						if (reach > 20) { unit_t* u = const_cast<unit_t*>(v.follow); if (s.game->selected() != u) s.game->select(u); s.game->smart_order(xy{(int)(ux + dx * reach), (int)(uy + dy * reach)}, nullptr); moving = true; last_move_order = s.frame(); }
 					}
-				} else if (moving) { s.game->stop(); moving = false; }
+				} else if (moving && !(s.fps && firing && fire_ready)) { s.game->stop(); moving = false; }
 			} else { if (moving) { moving = false; } if (fwd || str) { if (v.follow) v.follow = nullptr; v.move(*s.r, fwd, str); } }
 			v.apply_follow(*s.r);
 			// overlay: selection and hover

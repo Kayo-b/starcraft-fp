@@ -22,7 +22,7 @@ static inline FpsKinds fps_enemy_roster(race_t r) {
 
 class Fps {
 public:
-	int kills = 0, wave = 0, shots = 0; // shots: attacks the player has started (counted in fire())
+	int kills = 0, wave = 0, shots = 0; // shots: attacks the player has started (the weapon cooldown jumping up)
 	// Enemies in wave w: melee from the start, ranged attackers join from wave 2. Capped and growing slowly so a lone hero stays winnable.
 	static int wave_melee(int w) { return std::min(6, 1 + (w + 1) / 2); }
 	static int wave_ranged(int w) { return w < 2 ? 0 : std::min(3, (w - 1) / 2); }
@@ -54,64 +54,15 @@ public:
 		return d <= range(p) + target->unit_type->dimensions.to.x; }
 	bool is_enemy(const unit_t* u) const { return u && u->owner == g_.enemy(); }
 
-	// Fire at `target` (an enemy in weapon range). The hero NEVER takes orders in FPS mode: OpenBW attack orders include
-	// movement ("close into range"), which fights the direct position writes and makes the hero lurch. Damage is applied
-	// directly through OpenBW's weapon-hit resolution, and the hero's own cooldown gates the rate of fire.
+	// Fire at `target` (an enemy in range): an attack order, re-issued only when the target changes.
 	bool fire(unit_t* target) {
-		// The target may come from the previous rendered frame; the simulation can have killed it since.
+		// The target may come from the previous rendered frame; the simulation can have killed it since, and OpenBW rejects orders
+		// on dead targets (it throws), so check at the moment of use.
 		if (!target || g_.fn().unit_dead(target) || g_.fn().unit_dying(target)) return false;
 		unit_t* p = player(); if (!p || !is_enemy(target) || !in_range(target)) return false;
-		if (p->ground_weapon_cooldown > kHold) return false; // kHold is our artificial no-auto-fire floor, not a real cooldown
-		const weapon_type_t* w = p->unit_type->ground_weapon.operator->();
-		if (!w) return false;
-		// face the target (sprite frame selection uses the unit heading)
-		double ang = std::atan2(target->sprite->position.y - p->sprite->position.y, target->sprite->position.x - p->sprite->position.x);
-		int units = (int)std::lround(ang / 6.283185307179586 * 256) & 255;
-		p->heading = direction_t::from_raw(units);
-		g_.fn().weapon_deal_damage(w, fp8::integer(w->damage_amount), 1, target, p->heading, p, g_.owner());
-		p->ground_weapon_cooldown = w->cooldown;
-		++shots;
-		return true;
+		if (p->order_target.unit == target && (p->order_type->id == Orders::AttackUnit)) return true;
+		g_.select(p); return g_.smart_order(target->sprite->position, target);
 	}
-
-	// Doom-like direct movement: velocity with acceleration and friction, written straight onto the hero's position
-	// (no move orders, so the hero can walk and shoot at the same time). Collision is checked against OpenBW's own
-	// walkability per axis (slide); enemy body-blocking is not handled yet.
-	void go_to(double x, double y) { gx_ = x; gy_ = y; goal_ = true; }
-	void drive(double ix, double iy, double dt) {
-		unit_t* u = player(); if (!u) return;
-		if (ix != 0 || iy != 0) goal_ = false;
-		if (goal_ && ix == 0 && iy == 0) { // auto-walk toward the RMB point
-			double dx = gx_ - u->sprite->position.x, dy = gy_ - u->sprite->position.y;
-			double d = std::hypot(dx, dy);
-			if (d < 12) { goal_ = false; }
-			else { ix = dx / d; iy = dy / d; }
-		}
-		const double accel = 2000.0, max_speed = 320.0, friction = 8.0;
-		if (ix != 0 || iy != 0) {
-			double len = std::hypot(ix, iy); ix /= len; iy /= len;
-			vx_ += ix * accel * dt; vy_ += iy * accel * dt;
-			double sp = std::hypot(vx_, vy_);
-			if (sp > max_speed) { vx_ *= max_speed / sp; vy_ *= max_speed / sp; }
-		} else {
-			vx_ *= std::exp(-friction * dt); vy_ *= std::exp(-friction * dt);
-			if (std::fabs(vx_) < 2) vx_ = 0; if (std::fabs(vy_) < 2) vy_ = 0;
-		}
-		double r = (u->unit_type->dimensions.from.x + u->unit_type->dimensions.to.x + 1) / 4.0;
-		auto can = [&](double nx, double ny) {
-			for (int dy = -1; dy <= 1; dy += 2) for (int dx = -1; dx <= 1; dx += 2) {
-				int px = (int)std::floor(nx + dx * r), py = (int)std::floor(ny + dy * r);
-				if (px < 0 || py < 0 || px >= (int)g_.st().game->map_width || py >= (int)g_.st().game->map_height) return false;
-				if (!g_.fn().is_walkable(xy{px, py})) return false;
-			}
-			return true;
-		};
-		double nx = u->sprite->position.x + vx_ * dt, ny = u->sprite->position.y + vy_ * dt;
-		if (can(nx, u->sprite->position.y)) u->sprite->position.x = (int)std::lround(nx); else vx_ = 0;
-		if (can(u->sprite->position.x, ny)) u->sprite->position.y = (int)std::lround(ny); else vy_ = 0;
-	}
-	void halt() { vx_ = vy_ = 0; }
-	double speed() { return std::hypot(vx_, vy_); }
 
 	// The weapon only fires while the trigger is held. StarCraft units attack anything in range on their own, which is wrong for a
 	// shooter, so while the trigger is up the weapon cooldown is kept above zero (the attack logic needs it to be 0).
@@ -120,10 +71,9 @@ public:
 	// Call once per simulation frame after Game::step().
 	void tick() {
 		unit_t* p = player(); if (!p) return;
-		if (!trigger_) { // trigger up: keep the cooldown off zero so the idle hero never auto-attacks
-			if (p->ground_weapon_cooldown < kHold) p->ground_weapon_cooldown = kHold;
-			if (p->air_weapon_cooldown < kHold) p->air_weapon_cooldown = kHold;
-		}
+		if ((int)p->ground_weapon_cooldown > last_cooldown_ && (int)p->ground_weapon_cooldown > kHold) ++shots; // a real attack, not our hold
+		if (!trigger_) { if (p->ground_weapon_cooldown < kHold) p->ground_weapon_cooldown = kHold; if (p->air_weapon_cooldown < kHold) p->air_weapon_cooldown = kHold; }
+		last_cooldown_ = (int)p->ground_weapon_cooldown;
 		// kills: enemies we were tracking that are gone
 		for (size_t i = 0; i < enemy_ids_.size();) { if (!g_.fn().get_unit(enemy_ids_[i])) { ++kills; enemy_ids_.erase(enemy_ids_.begin() + i); } else ++i; }
 		if (g_.frame() >= next_wave_frame_ && enemy_ids_.empty()) spawn_wave(p);
@@ -156,7 +106,7 @@ private:
 	static constexpr int kHold = 2; // after the per-frame decrement it is still > 0
 	bool trigger_ = false;
 	Game& g_; std::mt19937 rng_; unit_id player_id_{}; FpsKinds roster_{};
-	std::vector<unit_id> enemy_ids_; int next_wave_frame_ = 0, last_cooldown_ = 0; double vx_ = 0, vy_ = 0; bool goal_ = false; double gx_ = 0, gy_ = 0;
+	std::vector<unit_id> enemy_ids_; int next_wave_frame_ = 0, last_cooldown_ = 0;
 };
 
 } // namespace fp
