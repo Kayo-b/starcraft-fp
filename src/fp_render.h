@@ -230,17 +230,25 @@ private:
 			double u = wall_side ? hx : hy;        // coordinate along the face
 			int r_bot = (int)std::round(row_at(perp, level_before));
 			int r_top = (int)std::round(row_at(perp, top_level));
+			int span = std::max(1, std::abs(r_bot - r_top));
 			for (int sy = std::max(0, std::min(r_top, r_bot)); sy <= std::min(H_ - 1, std::max(r_top, r_bot)); ++sy) {
-				// sample the boundary texel column of the solid tile: just inside the higher/walkable side
+				// The wall face shows the solid tile's art at the boundary, mapped vertically across the whole tile:
+				// the top of the face shows the tile's surface rows, the bottom its edge/shadow rows. That keeps the
+				// face structured instead of one stretched colour.
+				double v = (double)(sy - std::min(r_top, r_bot)) / span; // 0 = face top, 1 = face bottom
 				uint8_t t[3];
-				if (wall_side == 0) { // vertical face at x = wall_mx*8: solid side is the wall cell (step up) or the previous cell (cliff)
+				if (wall_side == 0) { // vertical face at x = wall_mx*8
 					double fx = step_up ? wall_mx * kCell + 0.5 : wall_mx * kCell - 0.5;
-					tile_sample(fx, u, t, true);
+					double tile_y = std::floor(u / 32.0) * 32.0;
+					tile_sample(fx, tile_y + v * 31.0, t, true);
 				} else {
 					double fy = step_up ? wall_my * kCell + 0.5 : wall_my * kCell - 0.5;
-					tile_sample(u, fy, t, true);
+					double tile_x = std::floor(u / 32.0) * 32.0;
+					tile_sample(tile_x + v * 31.0, fy, t, true);
 				}
-				double shade = std::max(0.3, 1.0 - perp / 1000.0) * (wall_side ? 0.75 : 1.0);
+				// vertical shading: faces darken toward their base; side faces are darker than front-facing ones
+				double vshade = 0.62 + 0.38 * (1.0 - v);
+				double shade = std::max(0.3, 1.0 - perp / 1000.0) * (wall_side ? 0.75 : 1.0) * vshade;
 				fb[(size_t)sy * W_ + sx] = pack(t[0] * shade, t[1] * shade, t[2] * shade);
 			}
 		}
