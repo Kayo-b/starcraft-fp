@@ -29,7 +29,7 @@ using namespace fp;
 using Clock = std::chrono::steady_clock;
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false;
+	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false; int fire_rate = 200;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 };
@@ -43,7 +43,7 @@ struct Session {
 		r.reset(); player.reset(); fps.reset(); game.reset();
 		if (!a.game_map.empty()) {
 			replay = false; game = std::make_unique<Game>(); game->open(a.data, a.game_map, a.race, a.enemy, 1, a.fps);
-			if (a.fps) { fps = std::make_unique<Fps>(*game); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
+			if (a.fps) { fps = std::make_unique<Fps>(*game, 7, a.fire_rate); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
 			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh);
 		} else {
 			player = std::make_unique<replay_player>(); player->init(dir_loader(a.data)); replay = a.replay;
@@ -262,6 +262,7 @@ int main(int argc, char** argv) {
 		else if (k == "--map") { a.input = next(); a.replay = false; }
 		else if (k == "--game") a.game_map = next();
 		else if (k == "--fps") a.fps = true;
+		else if (k == "--fire-rate") a.fire_rate = atoi(next());
 		else if (k == "--weapons") a.weapons = next();
 		else if (k == "--race") a.race = parse_race(next());
 		else if (k == "--enemy") a.enemy = parse_race(next());
@@ -277,6 +278,7 @@ int main(int argc, char** argv) {
 		else die("unknown option");
 	}
 	if (a.fps && a.game_map.empty()) die("--fps needs --game MAP");
+	if (a.fire_rate < 10 || a.fire_rate > 1000) die("--fire-rate must be 10..1000 (percent of the StarCraft fire rate)");
 	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps] [--weapons MOD_DIR] | --map FILE) [--res WxH] [--window WxH] [--speed X] [--start-frame N] [--fullscreen] [--no-capture] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);

@@ -16,6 +16,7 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
 - **FPS** (`--game MAP --fps [--weapons MOD_DIR]`): you are Jim Raynor's Marine (Protoss: Fenix's Dragoon, Zerg: Hunter-Killer).
   WASD is direct velocity-based movement (acceleration, friction, wall slide; no move orders, so you can walk and shoot at once),
   mouse aims, hold LMB fires at the enemy under the crosshair
+  (fire rate is 200% of the StarCraft data by default; tune with `--fire-rate N`, N in percent, 10..1000)
   (small aim assist; no shooting through cliffs), RMB moves to the crosshair floor point, R restarts. The hero only fires while the trigger
   is held (StarCraft units normally auto-attack). Enemies: waves of the opposing race (melee first, ranged attackers join from wave 2,
   spawns kept apart), simple chase AI of our own (OpenBW has no AI). Sprites anchor at the box centre like the original renderer, so units sit on the ground.

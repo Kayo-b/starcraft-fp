@@ -71,6 +71,7 @@ int main(int argc, char** argv) {
 		  int hp0 = z ? z->hp.integer_part() : 0; bool fired = z && f2.fire(z); int hp_after = hp0, killed_at = -1; unit_id zid = d.fn().get_unit_id(z);
 		  for (int i = 0; i < 400 && fired; ++i) { d.step(); f2.tick(); unit_t* zz = d.fn().get_unit(zid); if (!zz) { killed_at = i; break; } hp_after = std::min(hp_after, (int)zz->hp.integer_part()); if (i % 10 == 0) f2.fire(zz); }
 		  check(fired, "fire() accepted an in-range enemy");
+		  { const weapon_type_t* w = f2.player()->unit_type->ground_weapon.operator->(); check(w && w->cooldown <= 10, "hero fire rate: the weapon cooldown is scaled down (" + std::to_string(w ? w->cooldown : -1) + " frames)"); }
 		  check(killed_at >= 0 || hp_after < hp0, "shooting damages the target (HP " + std::to_string(hp0) + " -> " + (killed_at >= 0 ? std::string("dead after ") + std::to_string(killed_at) + " frames" : std::to_string(hp_after)) + ")");
 		  check(f2.shots >= 1, "shots are counted from the weapon cooldown (" + std::to_string(f2.shots) + " shots fired in the duel)");
 		  check(killed_at >= 0 && f2.alive(), "the hero wins the duel and survives (HP " + std::to_string(f2.alive() ? (int)f2.player()->hp.integer_part() : 0) + ")"); }

@@ -26,7 +26,9 @@ public:
 	// Enemies in wave w: melee from the start, ranged attackers join from wave 2. Capped and growing slowly so a lone hero stays winnable.
 	static int wave_melee(int w) { return std::min(6, 1 + (w + 1) / 2); }
 	static int wave_ranged(int w) { return w < 2 ? 0 : std::min(3, (w - 1) / 2); }
-	explicit Fps(Game& g, uint32_t seed = 7) : g_(g), rng_(seed) {}
+	// fire_rate_percent: how fast the hero's weapon fires relative to the StarCraft data (100 = unchanged, 200 = twice as fast).
+	// Applied to the hero's own weapon entry only (hero weapons are used by no other unit).
+	explicit Fps(Game& g, uint32_t seed = 7, int fire_rate_percent = 200) : g_(g), rng_(seed), fire_rate_(std::max(10, fire_rate_percent)) {}
 
 	// Spawn the player's unit on their start location. Returns false if the map gave no usable start.
 	bool start() {
@@ -35,6 +37,11 @@ public:
 		unit_t* u = g_.spawn(fps_player_unit(g_.st().players[g_.owner()].race), at, g_.owner());
 		if (!u) return false;
 		player_id_ = g_.fn().get_unit_id(u); g_.select(u); roster_ = fps_enemy_roster(er);
+		// Faster hero fire rate (gameplay tuning): scale the hero's weapon cooldown down. Hero weapon types are used by
+		// no other unit, so mutating the loaded data only affects the hero. OpenBW's attack logic reads it every shot.
+		if (weapon_type_t* w = const_cast<weapon_type_t*>(u->unit_type->ground_weapon.operator->())) {
+			w->cooldown = std::max(1, w->cooldown * 100 / fire_rate_);
+		}
 		next_wave_frame_ = g_.frame() + 48; // short grace period
 		return true;
 	}
@@ -105,7 +112,7 @@ private:
 	}
 	static constexpr int kHold = 2; // after the per-frame decrement it is still > 0
 	bool trigger_ = false;
-	Game& g_; std::mt19937 rng_; unit_id player_id_{}; FpsKinds roster_{};
+	Game& g_; std::mt19937 rng_; int fire_rate_; unit_id player_id_{}; FpsKinds roster_{};
 	std::vector<unit_id> enemy_ids_; int next_wave_frame_ = 0, last_cooldown_ = 0;
 };
 
