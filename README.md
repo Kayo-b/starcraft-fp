@@ -23,7 +23,8 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
   is held (StarCraft units normally auto-attack). Enemies: waves of the opposing race (melee first, ranged attackers join from wave 2,
   spawns kept apart), simple chase AI of our own (OpenBW has no AI). Sprites anchor at the box centre like the original renderer, so units sit on the ground.
   HUD: HP, wave, kills, hover info; crosshair green = in weapon range, red = out of range. `--speed N` scales movement speed
-  (default 90%, order-driven walking reads the hero's runtime speed). `--fps-move-shoot` switches to direct movement:
+  (default 90%, order-driven walking reads the hero's runtime speed). `--no-vsync` turns off the 60 Hz vsync cap (soft-capped at 240 fps; the software renderer runs at ~1-2 ms/frame).
+  `--fps-move-shoot` switches to direct movement:
   velocity physics in any direction, walk and shoot at the same time, RMB = auto-walk goal; the hero then never takes orders
   (damage goes through OpenBW's hit resolution directly). Experimental — the order-driven mode is the default. Damage/shots/range are OpenBW's.
 - **Replay** (`--replay FILE`): watch from inside the world. **Game sandbox** (`--game MAP`): LMB select, RMB smart order, E possess,

@@ -247,15 +247,19 @@ private:
 			int smx = step_up ? wall_mx : prev_mx, smy = step_up ? wall_my : prev_my; // solid minitile
 			size_t s_mt = st_.tiles_mega_tile_index[(size_t)(smy / 4) * gs_.map_tile_width + (smx / 4)];
 			int mtx = smx & 3, mty = smy & 3;
-			// fallback rock tone: average the boundary column of the solid tile's surface, darkened
-			double frr = 0, fgg = 0, fbb = 0; int fn = 0;
-			for (int iy = 0; iy < 96; iy += 8) {
-				uint8_t t[3];
-				if (wall_side == 0) tile_sample(smx * kCell + 0.5, (smy / 4) * 32 + iy / 4.0, t, true);
-				else tile_sample((smx / 4) * 32 + iy / 4.0, smy * kCell + 0.5, t, true);
-				frr += t[0]; fgg += t[1]; fbb += t[2]; ++fn;
-			}
-			if (fn) { frr /= fn; fgg /= fn; fbb /= fn; }
+			// fallback rock tone (computed lazily, only if the SD art turns out blank here)
+			double frr = 0, fgg = 0, fbb = 0; bool tone_done = false;
+			auto ensure_tone = [&]() {
+				if (tone_done) return; tone_done = true;
+				int fn = 0;
+				for (int iy = 0; iy < 96; iy += 8) {
+					uint8_t t[3];
+					if (wall_side == 0) tile_sample(smx * kCell + 0.5, (smy / 4) * 32 + iy / 4.0, t, true);
+					else tile_sample((smx / 4) * 32 + iy / 4.0, smy * kCell + 0.5, t, true);
+					frr += t[0]; fgg += t[1]; fbb += t[2]; ++fn;
+				}
+				if (fn) { frr /= fn; fgg /= fn; fbb /= fn; }
+			};
 			for (int sy = std::max(0, std::min(r_top, r_bot)); sy <= std::min(H_ - 1, std::max(r_top, r_bot)); ++sy) {
 				double v = (double)(sy - std::min(r_top, r_bot)) / span; // 0 = face top, 1 = face bottom
 				uint8_t t[3] = {0, 0, 0};
@@ -265,6 +269,7 @@ private:
 					sd->texel(s_mt, mtx, mty, art_x, art_y, t);
 				}
 				if (t[0] < 8 && t[1] < 8 && t[2] < 8) { // black placeholder (space/void): shaded rock in the tile's own tone
+					ensure_tone();
 					double gr = 0.55 + 0.25 * (1.0 - v);
 					t[0] = (uint8_t)(frr * gr); t[1] = (uint8_t)(fgg * gr); t[2] = (uint8_t)(fbb * gr);
 				}

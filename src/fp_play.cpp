@@ -29,7 +29,7 @@ using namespace fp;
 using Clock = std::chrono::steady_clock;
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
+	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 };
@@ -266,6 +266,7 @@ int main(int argc, char** argv) {
 		else if (k == "--range") a.range_pct = atoi(next());
 		else if (k == "--speed") a.speed_pct = atoi(next());
 		else if (k == "--fps-move-shoot") a.direct = true;
+		else if (k == "--no-vsync") a.no_vsync = true;
 		else if (k == "--weapons") a.weapons = next();
 		else if (k == "--race") a.race = parse_race(next());
 		else if (k == "--enemy") a.enemy = parse_race(next());
@@ -293,7 +294,7 @@ int main(int argc, char** argv) {
 		if (SDL_Init(SDL_INIT_VIDEO) != 0) { std::cerr << "SDL_Init: " << SDL_GetError() << "\n"; return 1; }
 		SDL_Window* win = SDL_CreateWindow("StarCraft FP", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, a.ww, a.wh, SDL_WINDOW_RESIZABLE | (a.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
 		if (!win) { std::cerr << "SDL_CreateWindow: " << SDL_GetError() << "\n"; return 1; }
-		SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+		SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | (a.no_vsync ? 0 : SDL_RENDERER_PRESENTVSYNC));
 		if (!ren) ren = SDL_CreateRenderer(win, -1, 0);
 		if (!ren) { std::cerr << "SDL_CreateRenderer: " << SDL_GetError() << "\n"; return 1; }
 		SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
@@ -588,6 +589,10 @@ int main(int argc, char** argv) {
 				hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : "TAB follow  F free  P pause  =/- speed  R restart", grey, true, true);
 			}
 			SDL_RenderPresent(ren);
+			if (a.no_vsync) { // soft cap around 240 fps so the uncapped path does not burn the CPU
+				double target = 1.0 / 240.0, elapsed = std::chrono::duration<double>(Clock::now() - now).count();
+				if (elapsed < target) SDL_Delay((Uint32)((target - elapsed) * 1000.0));
+			}
 			fps = fps * 0.9 + 0.1 / std::max(1e-4, dt);
 			if ((title_t += dt) > 0.4) { title_t = 0;
 				std::string t = bwgame::format("StarCraft FP | %.0f fps (render %.1f ms) | frame %d/%d | x%.3g%s%s | %s", fps, render_ms, s.frame(), s.end_frame(), speed, paused ? " PAUSED" : "", s.done() ? " END" : "", v.follow ? "following unit" : "free camera");
