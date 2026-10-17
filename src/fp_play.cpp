@@ -29,7 +29,7 @@ using namespace fp;
 using Clock = std::chrono::steady_clock;
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false; int fire_rate = 200, range_pct = 200;
+	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false; int fire_rate = 200, range_pct = 200, speed_pct = 150;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 };
@@ -43,7 +43,7 @@ struct Session {
 		r.reset(); player.reset(); fps.reset(); game.reset();
 		if (!a.game_map.empty()) {
 			replay = false; game = std::make_unique<Game>(); game->open(a.data, a.game_map, a.race, a.enemy, 1, a.fps);
-			if (a.fps) { fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
+			if (a.fps) { fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct, a.speed_pct, a.direct); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
 			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh);
 		} else {
 			player = std::make_unique<replay_player>(); player->init(dir_loader(a.data)); replay = a.replay;
@@ -264,6 +264,8 @@ int main(int argc, char** argv) {
 		else if (k == "--fps") a.fps = true;
 		else if (k == "--fire-rate") a.fire_rate = atoi(next());
 		else if (k == "--range") a.range_pct = atoi(next());
+		else if (k == "--speed") a.speed_pct = atoi(next());
+		else if (k == "--fps-move-shoot") a.direct = true;
 		else if (k == "--weapons") a.weapons = next();
 		else if (k == "--race") a.race = parse_race(next());
 		else if (k == "--enemy") a.enemy = parse_race(next());
@@ -281,6 +283,7 @@ int main(int argc, char** argv) {
 	if (a.fps && a.game_map.empty()) die("--fps needs --game MAP");
 	if (a.fire_rate < 10 || a.fire_rate > 1000) die("--fire-rate must be 10..1000 (percent of the StarCraft fire rate)");
 	if (a.range_pct < 10 || a.range_pct > 1000) die("--range must be 10..1000 (percent of the StarCraft weapon range)");
+	if (a.speed_pct < 10 || a.speed_pct > 1000) die("--speed must be 10..1000 (percent of the StarCraft movement speed)");
 	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps] [--weapons MOD_DIR] | --map FILE) [--res WxH] [--window WxH] [--speed X] [--start-frame N] [--fullscreen] [--no-capture] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
@@ -395,7 +398,8 @@ int main(int argc, char** argv) {
 			K(6.0, "W down", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_W, SDLK_w); });
 			K(7.2, "W up", [&] { push_key(SDL_KEYUP, SDL_SCANCODE_W, SDLK_w); });
 			K(7.6, "check drive", [&] { double d = std::hypot(w->sprite->position.x - st_x0, w->sprite->position.y - st_y0); st.check("W drives the possessed SCV (moved " + std::to_string((int)d) + " px)", d > 40); });
-			K(8.2, "check stopped", [&] { static double px = w->sprite->position.x, py = w->sprite->position.y; (void)px; (void)py; st.check("releasing W stops it (order id " + std::to_string((int)w->order_type->id) + ")", w->order_type->id == Orders::Stop || w->order_type->id == Orders::Nothing || w->order_type->id == Orders::PlayerGuard); });
+			K(8.2, "check stopped", [&] { static double px = w->sprite->position.x, py = w->sprite->position.y; (void)px; (void)py; st.check(s.fps && s.fps->direct() ? "releasing W stops it (velocity " + std::to_string((int)F_().speed()) + ")" : "releasing W stops it (order id " + std::to_string((int)w->order_type->id) + ")",
+					s.fps && s.fps->direct() ? F_().speed() < 2.0 : (w->order_type->id == Orders::Stop || w->order_type->id == Orders::Nothing || w->order_type->id == Orders::PlayerGuard)); });
 			K(8.3, "build", [&] { G().st().current_minerals[G().owner()] = 500; depots0 = G().count([&](unit_t* u) { return u->owner == G().owner() && u->unit_type->id == UnitTypes::Terran_Supply_Depot; });
 				G().select(w); st.check("found a valid Supply Depot site to aim at", aim_open(w, 110, G().fn().get_unit_type(UnitTypes::Terran_Supply_Depot), gx, gy)); });
 			K(8.5, "B", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_B, SDLK_b); });
@@ -452,6 +456,9 @@ int main(int argc, char** argv) {
 				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-a.rh / 3.0, std::min(a.rh / 3.0, v.cam.pitch - e.motion.yrel * 0.8)); }
 				else if (e.type == SDL_MOUSEBUTTONUP && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = false; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
+				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && s.fps->direct() && e.button.button == SDL_BUTTON_RIGHT) {
+					if (pick.ground) s.fps->go_to(pick.gx, pick.gy); else cmd.say("Aim at the floor");
+				}
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.live()) {
 					Game& G = *s.game; bool shift = SDL_GetModState() & KMOD_SHIFT;
 					if (e.button.button == SDL_BUTTON_LEFT) {
@@ -514,7 +521,15 @@ int main(int argc, char** argv) {
 			// movement: free camera flies; a possessed unit in game mode is driven with move orders
 			double run_mul = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) ? 3.0 : 1.0, sp = 110.0 * run_mul * dt;
 			double fwd = (keys[SDL_SCANCODE_W] ? sp : 0) - (keys[SDL_SCANCODE_S] ? sp : 0), str = (keys[SDL_SCANCODE_D] ? sp : 0) - (keys[SDL_SCANCODE_A] ? sp : 0);
-			if (s.live() && v.follow) {
+			if (s.fps && s.fps->direct() && v.follow) { // direct mode: velocity input, walk and shoot at once, no orders
+				const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180;
+				double f = fwd > 0 ? 1 : fwd < 0 ? -1 : 0, sd = str > 0 ? 1 : str < 0 ? -1 : 0;
+				if (f || sd) {
+					double dx = std::cos(h) * f - std::sin(h) * sd, dy = std::sin(h) * f + std::cos(h) * sd, len = std::hypot(dx, dy);
+					s.fps->drive(dx / len, dy / len, dt);
+				} else s.fps->drive(0, 0, dt);
+				moving = false;
+			} else if (s.live() && v.follow) {
 				if ((fwd || str) && !(s.fps && firing && fire_ready) && (!s.fps || s.fps->alive())) {
 					if (!moving || s.frame() - last_move_order >= 6) {
 						const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180; double f = fwd > 0 ? 1 : fwd < 0 ? -1 : 0, sd = str > 0 ? 1 : str < 0 ? -1 : 0;
