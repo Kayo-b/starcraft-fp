@@ -247,10 +247,20 @@ private:
 		if (d.sp && (d.frame < 0 || d.frame >= (int)d.sp->frames.size())) d.sp = nullptr;
 		double base = v.horizon + p_.eye_h * v.proj / depth;
 		if (d.sp) {
+			// The unit position anchors the CENTER of the sprite box (same convention as the community renderers):
+			// a frame at (xoff,yoff) spans below the anchor, so most of the art sits lower than a bottom-aligned billboard.
 			const auto& fr = d.sp->frames[d.frame];
-			d.wpx = fr.w / 4.0 * v.proj / depth; d.hpx = fr.h / 4.0 * v.proj / depth; // HD pixels are 4x SD (assumed)
-		} else { d.wpx = un.r * 2 * v.proj / depth; d.hpx = un.hgt * v.proj / depth; }
-		d.x0 = (int)(sxc - d.wpx / 2); d.x1 = (int)(sxc + d.wpx / 2); d.y0 = (int)(base - d.hpx); d.y1 = (int)base;
+			const double sf = 0.25; // HD pixels are 4x SD
+			double cx = (fr.xoff + fr.w / 2.0 - d.sp->box_w / 2.0) * sf; // horizontal anchor offset (world px)
+			double top = (fr.yoff - d.sp->box_h / 2.0) * sf;             // frame top relative to ground (negative = above)
+			double bot = top + fr.h * sf;                                // frame bottom relative to ground
+			d.wpx = fr.w * sf * v.proj / depth; d.hpx = fr.h * sf * v.proj / depth;
+			d.x0 = (int)(sxc + cx * v.proj / depth - d.wpx / 2);
+			d.x1 = (int)(sxc + cx * v.proj / depth + d.wpx / 2);
+			d.y0 = (int)(base + top * v.proj / depth);
+			d.y1 = (int)(base + bot * v.proj / depth);
+		} else { d.wpx = un.r * 2 * v.proj / depth; d.hpx = un.hgt * v.proj / depth;
+			d.x0 = (int)(sxc - d.wpx / 2); d.x1 = (int)(sxc + d.wpx / 2); d.y0 = (int)(base - d.hpx); d.y1 = (int)base; }
 		return d;
 	}
 

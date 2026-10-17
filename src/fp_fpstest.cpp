@@ -32,7 +32,7 @@ static Outcome fight(const std::string& data, const std::string& map, int max_fr
 			int n = g.count([&](unit_t* u) { return u->owner == g.enemy(); });
 			int zl = g.count([&](unit_t* u) { return u->owner == g.enemy() && u->unit_type->id == UnitTypes::Zerg_Zergling; });
 			int reach = g.count([&](unit_t* u) { return u->owner == g.enemy() && g.fn().is_reachable(p->sprite->position, u->sprite->position); });
-			check(n == Fps::wave_size(1) && zl == n && reach == n, "wave 1 at frame " + std::to_string(g.frame()) + ": " + std::to_string(n) + " enemies, " + std::to_string(zl) + " Zerglings, " + std::to_string(reach) + " reachable from the player"); }
+			check(n == Fps::wave_melee(1) + Fps::wave_ranged(1) && zl == n && reach == n, "wave 1 at frame " + std::to_string(g.frame()) + ": " + std::to_string(n) + " enemies, " + std::to_string(zl) + " Zerglings, " + std::to_string(reach) + " reachable from the player"); }
 		if (verbose && wave_checked && !ai_checked && g.frame() % 6 == 0) { ai_checked = true; // one AI pass later
 			int hunting = g.count([&](unit_t* u) { return u->owner == g.enemy() && u->order_target.unit == p && (u->order_type->id == Orders::AttackUnit || u->order_type->id == Orders::AttackMove); });
 			int total = g.count([&](unit_t* u) { return u->owner == g.enemy(); });
@@ -74,6 +74,29 @@ int main(int argc, char** argv) {
 		  check(killed_at >= 0 || hp_after < hp0, "shooting damages the target (HP " + std::to_string(hp0) + " -> " + (killed_at >= 0 ? std::string("dead after ") + std::to_string(killed_at) + " frames" : std::to_string(hp_after)) + ")");
 		  check(f2.shots >= 1, "shots are counted from the weapon cooldown (" + std::to_string(f2.shots) + " shots fired in the duel)");
 		  check(killed_at >= 0 && f2.alive(), "the hero wins the duel and survives (HP " + std::to_string(f2.alive() ? (int)f2.player()->hp.integer_part() : 0) + ")"); }
+		// Direct movement: velocity ramps up, the hero moves where the input points (walls may stop it), collision keeps it
+		// on walkable ground, and shooting still works while moving.
+		{ Game m; m.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f3(m); f3.start(); unit_t* p = f3.player();
+		  f3.drive(1, 0, 0.05); check(f3.speed() > 0 && f3.speed() <= 400, "drive(): velocity ramps toward the speed cap (" + std::to_string((int)f3.speed()) + ")");
+		  // wander in all four directions; total path must be significant and every position standable
+		  double path = 0; int bad = 0; double lastx = p->sprite->position.x, lasty = p->sprite->position.y;
+		  for (int d = 0; d < 4; ++d) for (int i = 0; i < 60; ++i) {
+			double ix = (d == 0) - (d == 2), iy = (d == 1) - (d == 3);
+			f3.drive(ix, iy, 0.05); m.step(); f3.tick();
+			path += std::hypot(p->sprite->position.x - lastx, p->sprite->position.y - lasty);
+			lastx = p->sprite->position.x; lasty = p->sprite->position.y;
+			double r = (p->unit_type->dimensions.from.x + p->unit_type->dimensions.to.x + 1) / 4.0; bool ok = true;
+			for (int dy = -1; dy <= 1 && ok; dy += 2) for (int dx = -1; dx <= 1; dx += 2) {
+				int px = (int)std::floor(p->sprite->position.x + dx * r), py = (int)std::floor(p->sprite->position.y + dy * r);
+				if (px < 0 || py < 0 || px >= (int)m.st().game->map_width || py >= (int)m.st().game->map_height || !m.fn().is_walkable(xy{px, py})) ok = false; }
+			if (!ok) ++bad; }
+		  check(path > 60, "drive(): the hero actually moves (" + std::to_string((int)path) + " px of path)");
+		  check(bad == 0, "drive(): never leaves walkable ground (0 violations)");
+		  // firing while moving: spawn a Zergling in range, hold the trigger, drive away slowly; damage must still land
+		  unit_t* z = m.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 90, p->sprite->position.y}, m.enemy());
+		  if (z) { f3.set_trigger(true); int hp0 = (int)z->hp.integer_part();
+			for (int i = 0; i < 60; ++i) { f3.drive(0, 1, 0.02); m.step(); f3.tick(); if (f3.in_range(z)) f3.fire(z); }
+			check((int)z->hp.integer_part() < hp0 || m.fn().unit_dead(z), "drive(): the hero keeps shooting while moving (target HP " + std::to_string(hp0) + " -> " + std::to_string((int)z->hp.integer_part()) + ")"); } }
 		// Death: with no one to defend, a large wave must kill the player and alive() must report it.
 		Game g; g.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps fps(g); fps.start();
 		unit_t* p = fps.player(); for (int i = 0; i < 40; ++i) g.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 20 + (i % 8) * 6, p->sprite->position.y + 20 + (i / 8) * 6}, g.enemy());

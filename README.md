@@ -14,9 +14,11 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
     ./run.sh --fps           # FPS: you are a hero unit; waves of enemies hunt you (needs --weapons MOD_DIR for the gun/sounds)
     ./run.sh --game MAP      # live RTS-style sandbox: possess a unit, give orders (kept; see below)
 - **FPS** (`--game MAP --fps [--weapons MOD_DIR]`): you are Jim Raynor's Marine (Protoss: Fenix's Dragoon, Zerg: Hunter-Killer).
-  WASD move (movement orders to the unit, so SC pathing/physics apply), mouse aims, hold LMB fires at the enemy under the crosshair
+  WASD is direct velocity-based movement (acceleration, friction, wall slide; no move orders, so you can walk and shoot at once),
+  mouse aims, hold LMB fires at the enemy under the crosshair
   (small aim assist; no shooting through cliffs), RMB moves to the crosshair floor point, R restarts. The hero only fires while the trigger
-  is held (StarCraft units normally auto-attack). Enemies: waves of the opposing race, simple chase AI of our own (OpenBW has no AI).
+  is held (StarCraft units normally auto-attack). Enemies: waves of the opposing race (melee first, ranged attackers join from wave 2,
+  spawns kept apart), simple chase AI of our own (OpenBW has no AI). Sprites anchor at the box centre like the original renderer, so units sit on the ground.
   HUD: HP, wave, kills, hover info; crosshair green = enemy in weapon range, orange = out of range. Damage/shots/range are OpenBW's.
 - **Replay** (`--replay FILE`): watch from inside the world. **Game sandbox** (`--game MAP`): LMB select, RMB smart order, E possess,
   T/Y train, B build supply, X stop (Terran/Protoss workers only for building).

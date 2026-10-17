@@ -23,8 +23,9 @@ static inline FpsKinds fps_enemy_roster(race_t r) {
 class Fps {
 public:
 	int kills = 0, wave = 0, shots = 0; // shots: attacks the player has started (the weapon cooldown jumping up)
-	// Enemies in wave w. Kept small: a lone unit cannot kite in StarCraft, so wave 1 must be winnable by standing and shooting.
-	static int wave_size(int w) { return 1 + w; }
+	// Enemies in wave w: melee from the start, ranged attackers join from wave 2. Capped and growing slowly so a lone hero stays winnable.
+	static int wave_melee(int w) { return std::min(6, 1 + (w + 1) / 2); }
+	static int wave_ranged(int w) { return w < 2 ? 0 : std::min(3, (w - 1) / 2); }
 	explicit Fps(Game& g, uint32_t seed = 7) : g_(g), rng_(seed) {}
 
 	// Spawn the player's unit on their start location. Returns false if the map gave no usable start.
@@ -63,6 +64,37 @@ public:
 		g_.select(p); return g_.smart_order(target->sprite->position, target);
 	}
 
+	// Doom-like direct movement: velocity with acceleration and friction, written straight onto the hero's position
+	// (no move orders, so the hero can walk and shoot at the same time). Collision is checked against OpenBW's own
+	// walkability per axis (slide); enemy body-blocking is not handled yet.
+	void drive(double ix, double iy, double dt) {
+		unit_t* u = player(); if (!u) return;
+		const double accel = 2400.0, max_speed = 400.0, friction = 9.0;
+		if (ix != 0 || iy != 0) {
+			double len = std::hypot(ix, iy); ix /= len; iy /= len;
+			vx_ += ix * accel * dt; vy_ += iy * accel * dt;
+			double sp = std::hypot(vx_, vy_);
+			if (sp > max_speed) { vx_ *= max_speed / sp; vy_ *= max_speed / sp; }
+		} else {
+			vx_ *= std::exp(-friction * dt); vy_ *= std::exp(-friction * dt);
+			if (std::fabs(vx_) < 2) vx_ = 0; if (std::fabs(vy_) < 2) vy_ = 0;
+		}
+		double r = (u->unit_type->dimensions.from.x + u->unit_type->dimensions.to.x + 1) / 4.0;
+		auto can = [&](double nx, double ny) {
+			for (int dy = -1; dy <= 1; dy += 2) for (int dx = -1; dx <= 1; dx += 2) {
+				int px = (int)std::floor(nx + dx * r), py = (int)std::floor(ny + dy * r);
+				if (px < 0 || py < 0 || px >= (int)g_.st().game->map_width || py >= (int)g_.st().game->map_height) return false;
+				if (!g_.fn().is_walkable(xy{px, py})) return false;
+			}
+			return true;
+		};
+		double nx = u->sprite->position.x + vx_ * dt, ny = u->sprite->position.y + vy_ * dt;
+		if (can(nx, u->sprite->position.y)) u->sprite->position.x = (int)std::lround(nx); else vx_ = 0;
+		if (can(u->sprite->position.x, ny)) u->sprite->position.y = (int)std::lround(ny); else vy_ = 0;
+	}
+	void halt() { vx_ = vy_ = 0; }
+	double speed() { return std::hypot(vx_, vy_); }
+
 	// The weapon only fires while the trigger is held. StarCraft units attack anything in range on their own, which is wrong for a
 	// shooter, so while the trigger is up the weapon cooldown is kept above zero (the attack logic needs it to be 0).
 	void set_trigger(bool held) { trigger_ = held; }
@@ -83,22 +115,29 @@ public:
 
 private:
 	void spawn_wave(unit_t* p) {
-		++wave; int n = wave_size(wave); xy pp = p->sprite->position;
+		++wave; int melee = wave_melee(wave), ranged = wave_ranged(wave); xy pp = p->sprite->position;
 		std::uniform_real_distribution<double> ang(0, 6.283185307179586), dist(420, 760);
-		for (int i = 0, made = 0, tries = 0; made < n && tries < 400; ++tries) {
+		std::vector<xy> placed; // keep spawns apart so enemies do not clump into one ball
+		int made_melee = 0, made_ranged = 0;
+		for (int tries = 0; (made_melee < melee || made_ranged < ranged) && tries < 600; ++tries) {
 			double a = ang(rng_), d = dist(rng_); xy pos{(int)(pp.x + std::cos(a) * d), (int)(pp.y + std::sin(a) * d)};
 			if (pos.x < 32 || pos.y < 32 || pos.x >= (int)g_.st().game->map_width - 32 || pos.y >= (int)g_.st().game->map_height - 32) continue;
 			if (!g_.fn().is_walkable(pos) || !g_.fn().is_reachable(pp, pos)) continue;
-			UnitTypes t = (wave >= 3 && made % 3 == 2) ? roster_.ranged : roster_.melee;
+			bool too_close = false; for (auto& q : placed) if (std::hypot(q.x - pos.x, q.y - pos.y) < 72) { too_close = true; break; }
+			if (too_close) continue;
+			bool want_ranged = made_melee >= melee || (made_ranged < ranged && made_melee * 3 > melee * 2); // sprinkle ranged through the wave
+			UnitTypes t = want_ranged ? roster_.ranged : roster_.melee;
 			unit_t* e = g_.spawn(t, pos, g_.enemy()); if (!e) continue;
-			enemy_ids_.push_back(g_.fn().get_unit_id(e)); ++made; (void)i;
+			enemy_ids_.push_back(g_.fn().get_unit_id(e));
+			if (want_ranged) ++made_ranged; else ++made_melee;
+			placed.push_back(pos);
 		}
 		next_wave_frame_ = g_.frame() + 24 * 8; // next wave only after this one is cleared AND 8 s have passed
 	}
 	static constexpr int kHold = 2; // after the per-frame decrement it is still > 0
 	bool trigger_ = false;
 	Game& g_; std::mt19937 rng_; unit_id player_id_{}; FpsKinds roster_{};
-	std::vector<unit_id> enemy_ids_; int next_wave_frame_ = 0, last_cooldown_ = 0;
+	std::vector<unit_id> enemy_ids_; int next_wave_frame_ = 0, last_cooldown_ = 0; double vx_ = 0, vy_ = 0;
 };
 
 } // namespace fp
