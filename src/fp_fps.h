@@ -31,7 +31,7 @@ public:
 	// map), so mutating the loaded data only affects the hero.
 	// direct: the hero never takes movement/attack orders; WASD drives the position with our own velocity physics and
 	// fire() applies damage through OpenBW's hit resolution. This allows moving and shooting at the same time.
-	explicit Fps(Game& g, uint32_t seed = 7, int fire_rate_percent = 200, int range_percent = 200, int speed_percent = 150, bool direct = false)
+	explicit Fps(Game& g, uint32_t seed = 7, int fire_rate_percent = 200, int range_percent = 200, int speed_percent = 90, bool direct = false)
 		: g_(g), rng_(seed), fire_rate_(std::max(10, fire_rate_percent)), range_pct_(std::max(10, range_percent)),
 		  speed_pct_(std::max(10, speed_percent)), direct_(direct) {}
 	bool direct() const { return direct_; }
@@ -119,7 +119,7 @@ public:
 			if (d < 12) goal_ = false;
 			else { ix = dx / d; iy = dy / d; }
 		}
-		const double accel = 2000.0, max_speed = 320.0, friction = 8.0;
+		const double accel = 2000.0, max_speed = 192.0, friction = 8.0; // 40% slower than the original 320 px/s cap
 		if (ix != 0 || iy != 0) {
 			double len = std::hypot(ix, iy); ix /= len; iy /= len;
 			vx_ += ix * accel * dt; vy_ += iy * accel * dt;

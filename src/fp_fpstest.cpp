@@ -82,15 +82,15 @@ int main(int argc, char** argv) {
 		  check(f2.shots >= 1, "shots are counted from the weapon cooldown (" + std::to_string(f2.shots) + " shots fired in the duel)");
 		  check(killed_at >= 0 && f2.alive(), "the hero wins the duel and survives (HP " + std::to_string(f2.alive() ? (int)f2.player()->hp.integer_part() : 0) + ")"); }
 		// Direct-control mode: velocity movement in any direction, walk-and-shoot, goal steering, position ownership.
-		{ Game m; m.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f3(m, 7, 200, 200, 150, true); f3.start(); unit_t* p = f3.player();
+		{ Game m; m.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f3(m, 7, 200, 200, 90, true); f3.start(); unit_t* p = f3.player();
 		  // speed scaling: the hero's flingy top speed is 150% of the stock value
 		  { Game m2; m2.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true);
 			unit_t* stock = m2.spawn(UnitTypes::Hero_Jim_Raynor_Marine, m2.start_location(m2.owner()), m2.owner());
 			check(stock && p, "direct mode: both heroes spawn for the speed comparison");
 			if (stock && p) { int base = (int)stock->flingy_top_speed.integer_part();
 				int scaled = (int)p->flingy_top_speed.integer_part();
-				check(base > 0 && scaled == std::max(1, base * 150 / 100), "direct mode: hero movement speed is scaled 150% (" + std::to_string(base) + " -> " + std::to_string(scaled) + ")"); } }
-		  f3.drive(1, 0, 0.05); check(f3.speed() > 0 && f3.speed() <= 320, "direct mode: velocity ramps toward the cap (" + std::to_string((int)f3.speed()) + ")");
+				check(base > 0 && scaled == std::max(1, base * 90 / 100), "direct mode: hero movement speed is scaled 90% (" + std::to_string(base) + " -> " + std::to_string(scaled) + ")"); } }
+		  f3.drive(1, 0, 0.05); check(f3.speed() > 0 && f3.speed() <= 200, "direct mode: velocity ramps toward the cap (" + std::to_string((int)f3.speed()) + ")");
 		  double path = 0; int bad = 0; double lx = p->sprite->position.x, ly = p->sprite->position.y;
 		  for (int d = 0; d < 4; ++d) for (int i = 0; i < 60; ++i) {
 			double ix = (d == 0) - (d == 2), iy = (d == 1) - (d == 3);

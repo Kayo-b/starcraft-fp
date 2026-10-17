@@ -29,7 +29,7 @@ using namespace fp;
 using Clock = std::chrono::steady_clock;
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false; int fire_rate = 200, range_pct = 200, speed_pct = 150;
+	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 };
