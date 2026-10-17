@@ -115,7 +115,7 @@ public:
 		std::sort(vis.begin(), vis.end(), [](const Vis& a, const Vis& b) { return a.depth > b.depth; });
 
 		auto band = [&](int xa, int xb) {
-			for (int sx = xa; sx < xb; ++sx) column(cam, sx, v.dirx, v.diry, v.planex, v.planey, v.proj, v.horizon, fb);
+			for (int sx = xa; sx < xb; ++sx) column(cam, sx, v.dirx, v.diry, v.planex, v.planey, v.proj, v.horizon, v.eye_level, fb);
 			for (auto& vi : vis) sprite(cam, units_[vi.idx], vi.depth, vi.sx, v, fb, xa, xb);
 		};
 		unsigned n = threads ? threads : std::max(1u, std::min(12u, std::thread::hardware_concurrency()));
@@ -173,7 +173,7 @@ public:
 private:
 	static uint32_t pack(double r, double g, double b) { return 0xFF000000u | ((uint32_t)std::min(255.0, r) << 16) | ((uint32_t)std::min(255.0, g) << 8) | (uint32_t)std::min(255.0, b); }
 
-	void column(const Camera& cam, int sx, double dirx, double diry, double planex, double planey, double proj, double horizon, uint32_t* fb) {
+	void column(const Camera& cam, int sx, double dirx, double diry, double planex, double planey, double proj, double horizon, double eye_level, uint32_t* fb) {
 		double camx = 2.0 * sx / W_ - 1.0, rdx = dirx + planex * camx, rdy = diry + planey * camx;
 		double gx = cam.x / kCell, gy = cam.y / kCell;
 		int mx = (int)std::floor(gx), my = (int)std::floor(gy);
@@ -181,38 +181,72 @@ private:
 		int stx = rdx < 0 ? -1 : 1, sty = rdy < 0 ? -1 : 1;
 		double sdx = (rdx < 0 ? gx - mx : mx + 1.0 - gx) * ddx, sdy = (rdy < 0 ? gy - my : my + 1.0 - gy) * ddy;
 		int side = 0; bool hit = false; double dist = 0;
+		int cur = cell_at(mx, my); int cur_level = cur > 0 ? cur - 1 : 0;
+		double seg_start = 0;
+		struct Seg { double d0, d1; int level; };
+		std::vector<Seg> segs;
+		int wall_mx = 0, wall_my = 0, wall_side = 0, level_before = cur_level, prev_mx = mx, prev_my = my;
 		for (int step = 0; step < 4096; ++step) {
+			prev_mx = mx; prev_my = my;
 			if (sdx < sdy) { dist = sdx; sdx += ddx; mx += stx; side = 0; } else { dist = sdy; sdy += ddy; my += sty; side = 1; }
-			if (cell_at(mx, my) == 0) { hit = true; break; }
+			int c = cell_at(mx, my);
+			if (c == 0) { // a wall: the floor segment ends here
+				segs.push_back({seg_start, dist, cur_level});
+				hit = true; wall_mx = mx; wall_my = my; wall_side = side; level_before = cur_level; break;
+			}
+			int nl = c - 1;
+			if (nl != cur_level) { segs.push_back({seg_start, dist, cur_level}); seg_start = dist; cur_level = nl; }
 		}
-		// rd has view-axis component 1, so the DDA parameter is the perpendicular distance (no fisheye).
+		if (!hit) segs.push_back({seg_start, 1e9, cur_level});
 		double perp = hit ? dist * kCell : 1e9;
 		zbuf_[sx] = perp;
-		double slice = hit ? (p_.wall_h * proj) / std::max(perp, 1.0) : 0;
-		double eye_off = p_.eye_h * proj / std::max(perp, 1.0);
-		int wall_bot = (int)std::min<double>(H_, horizon + eye_off), wall_top = (int)std::max<double>(0, horizon + eye_off - slice);
+		const double eh = p_.eye_h + eye_level * 32.0; // eye height above level-0 ground
+		auto row_at = [&](double d, double h) { return horizon + (eh - h * 32.0) * proj / std::max(d, 1.0); };
+		// sky first: any row above the horizon not later covered by a floor segment above the eye
 		for (int sy = 0; sy < H_; ++sy) {
-			uint32_t c;
-			if (hit && sy >= wall_top && sy < wall_bot) {
-				double hx = cam.x + rdx * perp, hy = cam.y + rdy * perp;
-				double u = side ? hx : hy;
-				uint8_t t[3]; tile_sample(side ? u : mx * kCell + 4.0, side ? my * kCell + 4.0 : u, t, true);
-				double shade = std::max(0.3, 1.0 - perp / 1000.0) * (side ? 0.75 : 1.0);
-				c = pack(t[0] * shade, t[1] * shade, t[2] * shade);
-			} else if (sy < horizon) {
-				double t = std::max(0.0, std::min(1.0, sy / std::max(1.0, horizon)));
-				c = pack(40 + 60 * t, 50 + 70 * t, 90 + 80 * t);
-			} else {
-				double rowd = (p_.eye_h * proj) / std::max(1.0, sy - horizon);
-				uint8_t t[3]; tile_sample(cam.x + rdx * rowd, cam.y + rdy * rowd, t);
-				double shade = std::max(0.35, 1.0 - rowd / 1400.0);
-				c = pack(t[0] * shade, t[1] * shade, t[2] * shade);
+			double t = std::max(0.0, std::min(1.0, sy / std::max(1.0, horizon)));
+			fb[(size_t)sy * W_ + sx] = pack(40 + 60 * t, 50 + 70 * t, 90 + 80 * t);
+		}
+		// floor segments: for each segment, the rows whose cast distance falls inside it
+		for (auto& seg : segs) {
+			double d0 = std::max(0.5, seg.d0 * kCell), d1 = std::min(seg.d1 * kCell, 1e9);
+			int ra = (int)std::round(row_at(d0, seg.level)), rb = (int)std::round(row_at(d1, seg.level));
+			int r0 = std::max(0, std::min(ra, rb)), r1 = std::min(H_ - 1, std::max(ra, rb));
+			for (int sy = r0; sy <= r1; ++sy) {
+				double d = (eh - seg.level * 32.0) * proj / (sy - horizon);
+				if (!(d >= d0 - 1e-6 && d <= d1 + 1e-6)) continue;
+				if (d > perp + 1e-6) continue; // beyond the wall
+				uint8_t t[3]; tile_sample(cam.x + rdx * d, cam.y + rdy * d, t);
+				double shade = std::max(0.35, 1.0 - d / 1400.0);
+				fb[(size_t)sy * W_ + sx] = pack(t[0] * shade, t[1] * shade, t[2] * shade);
 			}
-			fb[(size_t)sy * W_ + sx] = c;
+		}
+		// wall / ramp face: one vertical strip from the solid tile's edge art
+		if (hit) {
+			int wc = cell_at(wall_mx, wall_my);
+			bool step_up = wc > 0;                 // walkable higher ground: a ramp step
+			int top_level = step_up ? wc - 1 : level_before + 1; // cliffs show one 32px step from below
+			double hx = cam.x + rdx * perp, hy = cam.y + rdy * perp;
+			double u = wall_side ? hx : hy;        // coordinate along the face
+			int r_bot = (int)std::round(row_at(perp, level_before));
+			int r_top = (int)std::round(row_at(perp, top_level));
+			for (int sy = std::max(0, std::min(r_top, r_bot)); sy <= std::min(H_ - 1, std::max(r_top, r_bot)); ++sy) {
+				// sample the boundary texel column of the solid tile: just inside the higher/walkable side
+				uint8_t t[3];
+				if (wall_side == 0) { // vertical face at x = wall_mx*8: solid side is the wall cell (step up) or the previous cell (cliff)
+					double fx = step_up ? wall_mx * kCell + 0.5 : wall_mx * kCell - 0.5;
+					tile_sample(fx, u, t, true);
+				} else {
+					double fy = step_up ? wall_my * kCell + 0.5 : wall_my * kCell - 0.5;
+					tile_sample(u, fy, t, true);
+				}
+				double shade = std::max(0.3, 1.0 - perp / 1000.0) * (wall_side ? 0.75 : 1.0);
+				fb[(size_t)sy * W_ + sx] = pack(t[0] * shade, t[1] * shade, t[2] * shade);
+			}
 		}
 	}
 
-	struct View { double dirx, diry, planex, planey, proj, horizon; };
+	struct View { double dirx, diry, planex, planey, proj, horizon; double eye_level; };
 	struct Vis { double depth, sx; int idx; };
 	struct Draw { const AnimSprite* sp; int frame; bool flip; int x0, x1, y0, y1; double wpx, hpx; };
 
@@ -221,6 +255,8 @@ private:
 		View v; v.dirx = std::cos(hd); v.diry = std::sin(hd);
 		v.planex = -v.diry * std::tan(fov / 2); v.planey = v.dirx * std::tan(fov / 2);
 		v.proj = (W_ / 2.0) / std::tan(fov / 2); v.horizon = H_ / 2.0 + cam.pitch;
+		int lc = cell_at((int)std::floor(cam.x / kCell), (int)std::floor(cam.y / kCell)); // eye height follows the terrain level
+		v.eye_level = lc > 0 ? lc - 1 : 0;
 		return v;
 	}
 	std::vector<Vis> visible(const Camera& cam, const unit_t* hide, const View& v) const {
@@ -245,7 +281,9 @@ private:
 			d.frame = un.frame_base + off;
 		}
 		if (d.sp && (d.frame < 0 || d.frame >= (int)d.sp->frames.size())) d.sp = nullptr;
-		double base = v.horizon + p_.eye_h * v.proj / depth;
+		int ul = cell_at((int)std::floor(un.x / kCell), (int)std::floor(un.y / kCell)); ul = ul > 0 ? ul - 1 : 0; // the floor level the unit stands on
+		double eh = p_.eye_h + v.eye_level * 32.0;
+		double base = v.horizon + (eh - ul * 32.0) * v.proj / depth;
 		if (d.sp) {
 			// The unit position anchors the CENTER of the sprite box (same convention as the community renderers):
 			// a frame at (xoff,yoff) spans below the anchor, so most of the art sits lower than a bottom-aligned billboard.

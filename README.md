@@ -79,8 +79,15 @@ billboards sized from unit-type dimensions; eye height 12 px; FOV 66 degrees.
 - Live window: 60-79 fps with vsync, letterboxed; scripted input passes. Real human keyboard/mouse feel (sensitivity, pointer
   capture and ESC toggle, speed keys) has NOT been exercised by a person.
 
+## Terrain rendering
+- Floors follow the four StarCraft height levels (low/middle/high/very high) as real steps: the eye height, unit grounding and
+  floor casting are level-aware, and walkable level transitions render as step faces. Cliff faces and platform edges sample the
+  boundary strip of the adjacent solid tile's art instead of a stretched tile, so walls look like the map's own terrain.
+  Works with any map OpenBW can load (all eight tilesets via their HD DDS data).
+
 ## Known limits
 - The free camera collides with terrain only (not units/buildings/resources); the possessed/FPS unit collides like any StarCraft unit.
+- Walls show one 32-px step from below (upper cliff tiers are not rendered); creep effects and water animation are not drawn.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).
 - Only the main image of each sprite is drawn (no shadows/overlays).
 - Wall faces are one stretched texture row; map-edge walls clamp to the border tile. Flat floor; height levels not used for eye height.
