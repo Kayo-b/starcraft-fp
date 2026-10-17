@@ -81,6 +81,50 @@ int main(int argc, char** argv) {
 		  check(killed_at >= 0 || hp_after < hp0, "shooting damages the target (HP " + std::to_string(hp0) + " -> " + (killed_at >= 0 ? std::string("dead after ") + std::to_string(killed_at) + " frames" : std::to_string(hp_after)) + ")");
 		  check(f2.shots >= 1, "shots are counted from the weapon cooldown (" + std::to_string(f2.shots) + " shots fired in the duel)");
 		  check(killed_at >= 0 && f2.alive(), "the hero wins the duel and survives (HP " + std::to_string(f2.alive() ? (int)f2.player()->hp.integer_part() : 0) + ")"); }
+		// Direct-control mode: velocity movement in any direction, walk-and-shoot, goal steering, position ownership.
+		{ Game m; m.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f3(m, 7, 200, 200, 90, true); f3.start(); unit_t* p = f3.player();
+		  // speed scaling: the hero's flingy top speed is 150% of the stock value
+		  { Game m2; m2.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true);
+			unit_t* stock = m2.spawn(UnitTypes::Hero_Jim_Raynor_Marine, m2.start_location(m2.owner()), m2.owner());
+			check(stock && p, "direct mode: both heroes spawn for the speed comparison");
+			if (stock && p) { int base = (int)stock->flingy_top_speed.integer_part();
+				int scaled = (int)p->flingy_top_speed.integer_part();
+				check(base > 0 && scaled == std::max(1, base * 90 / 100), "direct mode: hero movement speed is scaled 90% (" + std::to_string(base) + " -> " + std::to_string(scaled) + ")"); } }
+		  f3.drive(1, 0, 0.05); check(f3.speed() > 0 && f3.speed() <= 200, "direct mode: velocity ramps toward the cap (" + std::to_string((int)f3.speed()) + ")");
+		  double path = 0; int bad = 0; double lx = p->sprite->position.x, ly = p->sprite->position.y;
+		  for (int d = 0; d < 4; ++d) for (int i = 0; i < 60; ++i) {
+			double ix = (d == 0) - (d == 2), iy = (d == 1) - (d == 3);
+			f3.drive(ix, iy, 0.05); m.step(); f3.tick();
+			path += std::hypot(p->sprite->position.x - lx, p->sprite->position.y - ly);
+			lx = p->sprite->position.x; ly = p->sprite->position.y;
+			double r = (p->unit_type->dimensions.from.x + p->unit_type->dimensions.to.x + 1) / 4.0; bool ok = true;
+			for (int dy = -1; dy <= 1 && ok; dy += 2) for (int dx = -1; dx <= 1; dx += 2) {
+				int px = (int)std::floor(p->sprite->position.x + dx * r), py = (int)std::floor(p->sprite->position.y + dy * r);
+				if (px < 0 || py < 0 || px >= (int)m.st().game->map_width || py >= (int)m.st().game->map_height || !m.fn().is_walkable(xy{px, py})) ok = false; }
+			if (!ok) ++bad; }
+		  check(path > 60, "direct mode: the hero moves in every direction (" + std::to_string((int)path) + " px of path)");
+		  check(bad == 0, "direct mode: never leaves walkable ground (0 violations)");
+		  // goal steering
+		  { double gx = p->sprite->position.x, gy = p->sprite->position.y; double gxx = 0, gyy = 0; bool found = false;
+			for (int d = 0; d < 4 && !found; ++d) { double ix = (d == 0) - (d == 2), iy = (d == 1) - (d == 3), tx = gx + ix * 80, ty = gy + iy * 80;
+				bool clear = true; for (double t = 0; t <= 80 && clear; t += 8) { int px = (int)(gx + ix * t), py = (int)(gy + iy * t);
+					if (px < 0 || py < 0 || px >= (int)m.st().game->map_width || py >= (int)m.st().game->map_height || !m.fn().is_walkable(xy{px, py})) clear = false; }
+				if (clear) { gxx = tx; gyy = ty; found = true; } }
+			if (found) { f3.go_to(gxx, gyy);
+				for (int i = 0; i < 120; ++i) { f3.drive(0, 0, 0.05); m.step(); f3.tick(); }
+				double dg = std::hypot(p->sprite->position.x - gxx, p->sprite->position.y - gyy);
+				check(dg < 40, "direct mode: goal steering stops close to the point (" + std::to_string((int)dg) + " px away)"); } }
+		  // walk-and-shoot
+		  { unit_t* z = m.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 90, p->sprite->position.y}, m.enemy());
+			if (z) { f3.set_trigger(true); int hp0 = (int)z->hp.integer_part();
+				for (int i = 0; i < 60; ++i) { f3.drive(0, 1, 0.02); m.step(); f3.tick(); if (f3.in_range(z)) f3.fire(z); }
+				check((int)z->hp.integer_part() < hp0 || m.fn().unit_dead(z), "direct mode: the hero shoots while moving (target HP " + std::to_string(hp0) + " -> " + std::to_string((int)z->hp.integer_part()) + ")"); } }
+		  // position ownership: enemies running over the hero must not displace it
+		  { f3.halt(); double hx = p->sprite->position.x, hy = p->sprite->position.y;
+			for (int i = 0; i < 3; ++i) { unit_t* z = m.spawn(UnitTypes::Zerg_Zergling, xy{(int)hx + 2 + i * 6, (int)hy + 2}, m.enemy()); if (z) m.attack_as(m.enemy(), z, p); }
+			for (int i = 0; i < 120; ++i) { m.step(); f3.tick(); f3.drive(0, 0, 0.05); }
+			check(p->sprite->position.x == (int)std::lround(hx) && p->sprite->position.y == (int)std::lround(hy), "direct mode: enemies cannot shove the hero (position unchanged)"); }
+		}
 		// Death: with no one to defend, a large wave must kill the player and alive() must report it.
 		Game g; g.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps fps(g); fps.start();
 		unit_t* p = fps.player(); for (int i = 0; i < 40; ++i) g.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 20 + (i % 8) * 6, p->sprite->position.y + 20 + (i / 8) * 6}, g.enemy());

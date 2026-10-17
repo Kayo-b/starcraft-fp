@@ -26,10 +26,15 @@ public:
 	// Enemies in wave w: melee from the start, ranged attackers join from wave 2. Capped and growing slowly so a lone hero stays winnable.
 	static int wave_melee(int w) { return std::min(6, 1 + (w + 1) / 2); }
 	static int wave_ranged(int w) { return w < 2 ? 0 : std::min(3, (w - 1) / 2); }
-	// fire_rate_percent / range_percent: how fast and how far the hero's weapon fires relative to the StarCraft data
-	// (100 = unchanged). Applied to the hero's own weapon entry only (hero weapons are used by no other unit).
-	explicit Fps(Game& g, uint32_t seed = 7, int fire_rate_percent = 200, int range_percent = 200)
-		: g_(g), rng_(seed), fire_rate_(std::max(10, fire_rate_percent)), range_pct_(std::max(10, range_percent)) {}
+	// fire_rate_percent / range_percent / speed_percent: hero weapon and movement tuning relative to the StarCraft data
+	// (100 = unchanged). Weapon entries and the hero's flingy are unique to the hero (or unused by anyone else on an FPS
+	// map), so mutating the loaded data only affects the hero.
+	// direct: the hero never takes movement/attack orders; WASD drives the position with our own velocity physics and
+	// fire() applies damage through OpenBW's hit resolution. This allows moving and shooting at the same time.
+	explicit Fps(Game& g, uint32_t seed = 7, int fire_rate_percent = 200, int range_percent = 200, int speed_percent = 90, bool direct = false)
+		: g_(g), rng_(seed), fire_rate_(std::max(10, fire_rate_percent)), range_pct_(std::max(10, range_percent)),
+		  speed_pct_(std::max(10, speed_percent)), direct_(direct) {}
+	bool direct() const { return direct_; }
 
 	// Spawn the player's unit on their start location. Returns false if the map gave no usable start.
 	bool start() {
@@ -44,6 +49,11 @@ public:
 			w->cooldown = std::max(1, w->cooldown * 100 / fire_rate_);
 			w->max_range = std::max(32u, (unsigned)((uint64_t)w->max_range * range_pct_ / 100));
 		}
+		// Movement speed: scale the hero's runtime flingy_top_speed (what movement actually reads). Hero flingies have a
+		// ~0 top_speed in the data; their real speed is set by their iscript at spawn, so the runtime value is authoritative.
+		{ int base = (int)u->flingy_top_speed.integer_part();
+		  if (base > 0) u->flingy_top_speed = fp8::integer(std::max(1, base * speed_pct_ / 100)); }
+		hx_ = at.x; hy_ = at.y;
 		next_wave_frame_ = g_.frame() + 48; // short grace period
 		return true;
 	}
@@ -65,9 +75,9 @@ public:
 
 	enum class ShotResult { none, hit, miss };
 
-	// Fire at `target`. In range: the attack goes through OpenBW's own order/hit resolution (the hit may still miss per the
-	// game's rules). Out of range: the shot is taken anyway but always misses, without any order (an attack order would make
-	// the hero walk into range). The hero's own cooldown gates the rate of fire either way.
+	// Fire at `target`. In range: direct mode applies the damage straight through OpenBW's weapon-hit resolution (no orders
+	// ever); order mode issues an attack order (StarCraft rules, the hero stands still). Out of range: the shot is always a
+	// miss either way. The hero's own cooldown gates the rate of fire.
 	ShotResult fire(unit_t* target) {
 		// The target may come from the previous rendered frame; the simulation can have killed it since, and OpenBW rejects orders
 		// on dead targets (it throws), so check at the moment of use.
@@ -76,16 +86,64 @@ public:
 		if (p->ground_weapon_cooldown > kHold) return ShotResult::none; // kHold is our artificial no-auto-fire floor, not a real cooldown
 		const weapon_type_t* w = p->unit_type->ground_weapon.operator->();
 		if (!w) return ShotResult::none;
+		double ang = std::atan2(target->sprite->position.y - p->sprite->position.y, target->sprite->position.x - p->sprite->position.x);
+		int units = (int)std::lround(ang / 6.283185307179586 * 256) & 255;
 		if (!in_range(target)) { // out of weapon range: the bolt cannot reach; take the shot and miss
 			p->ground_weapon_cooldown = w->cooldown;
 			++misses;
 			return ShotResult::miss;
+		}
+		if (direct_) {
+			// In direct mode we own the unit completely: face the target ourselves (order mode lets OpenBW turn the unit;
+			// overwriting its heading there breaks the attack sequence).
+			p->heading = direction_t::from_raw(units);
+			g_.fn().weapon_deal_damage(w, fp8::integer(w->damage_amount), 1, target, p->heading, p, g_.owner());
+			p->ground_weapon_cooldown = w->cooldown;
+			++shots;
+			return ShotResult::hit;
 		}
 		if (p->order_target.unit == target && p->order_type->id == Orders::AttackUnit) return ShotResult::hit;
 		g_.select(p); g_.smart_order(target->sprite->position, target);
 		++shots;
 		return ShotResult::hit;
 	}
+
+	// ---- direct movement (only used when direct() is true): velocity physics, any direction, no orders ----
+	void go_to(double x, double y) { gx_ = x; gy_ = y; goal_ = true; }
+	void drive(double ix, double iy, double dt) {
+		unit_t* u = player(); if (!u) return;
+		if (ix != 0 || iy != 0) goal_ = false;
+		if (goal_ && ix == 0 && iy == 0) { // auto-walk toward the RMB point
+			double dx = gx_ - hx_, dy = gy_ - hy_;
+			double d = std::hypot(dx, dy);
+			if (d < 12) goal_ = false;
+			else { ix = dx / d; iy = dy / d; }
+		}
+		const double accel = 2000.0, max_speed = 192.0, friction = 8.0; // 40% slower than the original 320 px/s cap
+		if (ix != 0 || iy != 0) {
+			double len = std::hypot(ix, iy); ix /= len; iy /= len;
+			vx_ += ix * accel * dt; vy_ += iy * accel * dt;
+			double sp = std::hypot(vx_, vy_);
+			if (sp > max_speed) { vx_ *= max_speed / sp; vy_ *= max_speed / sp; }
+		} else {
+			vx_ *= std::exp(-friction * dt); vy_ *= std::exp(-friction * dt);
+			if (std::fabs(vx_) < 2) vx_ = 0; if (std::fabs(vy_) < 2) vy_ = 0;
+		}
+		double r = (u->unit_type->dimensions.from.x + u->unit_type->dimensions.to.x + 1) / 4.0;
+		auto can = [&](double nx, double ny) {
+			for (int dy = -1; dy <= 1; dy += 2) for (int dx = -1; dx <= 1; dx += 2) {
+				int px = (int)std::floor(nx + dx * r), py = (int)std::floor(ny + dy * r);
+				if (px < 0 || py < 0 || px >= (int)g_.st().game->map_width || py >= (int)g_.st().game->map_height) return false;
+				if (!g_.fn().is_walkable(xy{px, py})) return false;
+			}
+			return true;
+		};
+		double nx = hx_ + vx_ * dt, ny = hy_ + vy_ * dt;
+		if (can(nx, hy_)) hx_ = nx; else vx_ = 0;
+		if (can(hx_, ny)) hy_ = ny; else vy_ = 0;
+	}
+	void halt() { vx_ = vy_ = 0; goal_ = false; }
+	double speed() { return std::hypot(vx_, vy_); }
 
 	// The weapon only fires while the trigger is held. StarCraft units attack anything in range on their own, which is wrong for a
 	// shooter, so while the trigger is up the weapon cooldown is kept above zero (the attack logic needs it to be 0).
@@ -94,6 +152,10 @@ public:
 	// Call once per simulation frame after Game::step().
 	void tick() {
 		unit_t* p = player(); if (!p) return;
+		if (direct_) { // the hero's position is ours: re-apply it in case anything in the step moved it (e.g. unit collision)
+			p->sprite->position.x = (int)std::lround(hx_);
+			p->sprite->position.y = (int)std::lround(hy_);
+		}
 		if ((int)p->ground_weapon_cooldown > last_cooldown_ && (int)p->ground_weapon_cooldown > kHold) ++shots; // a real attack, not our hold
 		if (!trigger_) { if (p->ground_weapon_cooldown < kHold) p->ground_weapon_cooldown = kHold; if (p->air_weapon_cooldown < kHold) p->air_weapon_cooldown = kHold; }
 		last_cooldown_ = (int)p->ground_weapon_cooldown;
@@ -128,7 +190,8 @@ private:
 	}
 	static constexpr int kHold = 2; // after the per-frame decrement it is still > 0
 	bool trigger_ = false;
-	Game& g_; std::mt19937 rng_; int fire_rate_, range_pct_; unit_id player_id_{}; FpsKinds roster_{};
+	Game& g_; std::mt19937 rng_; int fire_rate_, range_pct_, speed_pct_; bool direct_;
+	double vx_ = 0, vy_ = 0, hx_ = 0, hy_ = 0; bool goal_ = false; double gx_ = 0, gy_ = 0; unit_id player_id_{}; FpsKinds roster_{};
 	std::vector<unit_id> enemy_ids_; int next_wave_frame_ = 0, last_cooldown_ = 0;
 };
 
