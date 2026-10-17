@@ -438,6 +438,8 @@ int main(int argc, char** argv) {
 				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-a.rh / 3.0, std::min(a.rh / 3.0, v.cam.pitch - e.motion.yrel * 0.8)); }
 				else if (e.type == SDL_MOUSEBUTTONUP && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = false; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
+				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && e.button.button == SDL_BUTTON_RIGHT) {
+					if (pick.ground) s.fps->go_to(pick.gx, pick.gy); else cmd.say("Aim at the floor"); } // no orders: the hero never lets OpenBW move it
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.live()) {
 					Game& G = *s.game; bool shift = SDL_GetModState() & KMOD_SHIFT;
 					if (e.button.button == SDL_BUTTON_LEFT) {

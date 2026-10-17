@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
 		// Direct movement: velocity ramps up, the hero moves where the input points (walls may stop it), collision keeps it
 		// on walkable ground, and shooting still works while moving.
 		{ Game m; m.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f3(m); f3.start(); unit_t* p = f3.player();
-		  f3.drive(1, 0, 0.05); check(f3.speed() > 0 && f3.speed() <= 400, "drive(): velocity ramps toward the speed cap (" + std::to_string((int)f3.speed()) + ")");
+		  f3.drive(1, 0, 0.05); check(f3.speed() > 0 && f3.speed() <= 320, "drive(): velocity ramps toward the speed cap (" + std::to_string((int)f3.speed()) + ")");
 		  // wander in all four directions; total path must be significant and every position standable
 		  double path = 0; int bad = 0; double lastx = p->sprite->position.x, lasty = p->sprite->position.y;
 		  for (int d = 0; d < 4; ++d) for (int i = 0; i < 60; ++i) {
@@ -92,6 +92,23 @@ int main(int argc, char** argv) {
 			if (!ok) ++bad; }
 		  check(path > 60, "drive(): the hero actually moves (" + std::to_string((int)path) + " px of path)");
 		  check(bad == 0, "drive(): never leaves walkable ground (0 violations)");
+		  // goal steering (RMB): auto-walk toward a point, stopping close to it, without any OpenBW orders.
+		  // Run without stepping the simulation, so no wave can spawn and interfere with the walk. The goal must be
+		  // on open ground (probe the four directions), since a goal inside a wall can never be reached.
+		  { double gx = p->sprite->position.x, gy = p->sprite->position.y; double gxx = 0, gyy = 0; bool found = false;
+			for (int d = 0; d < 4 && !found; ++d) {
+				double ix = (d == 0) - (d == 2), iy = (d == 1) - (d == 3), tx = gx + ix * 80, ty = gy + iy * 80;
+				bool clear = true; for (double t = 0; t <= 80 && clear; t += 8) { int px = (int)(gx + ix * t), py = (int)(gy + iy * t);
+					if (px < 0 || py < 0 || px >= (int)m.st().game->map_width || py >= (int)m.st().game->map_height || !m.fn().is_walkable(xy{px, py})) clear = false; }
+				if (clear) { gxx = tx; gyy = ty; found = true; } }
+			if (found) { f3.go_to(gxx, gyy); int moved = 0;
+				for (int i = 0; i < 60; ++i) { f3.drive(0, 0, 0.05); if (std::hypot(p->sprite->position.x - gxx, p->sprite->position.y - gyy) < 60) { moved = 1; break; } }
+				check(moved, "drive(): goal steering walks toward the RMB point");
+				for (int i = 0; i < 120; ++i) f3.drive(0, 0, 0.05);
+				double dg = std::hypot(p->sprite->position.x - gxx, p->sprite->position.y - gyy);
+				check(dg < 40, "drive(): goal steering stops close to the point (" + std::to_string((int)dg) + " px away)");
+				check(f3.speed() < 40, "drive(): the hero is nearly stopped after arriving (" + std::to_string((int)f3.speed()) + " px/s)"); }
+			else check(false, "drive(): found open ground for the goal point"); }
 		  // firing while moving: spawn a Zergling in range, hold the trigger, drive away slowly; damage must still land
 		  unit_t* z = m.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 90, p->sprite->position.y}, m.enemy());
 		  if (z) { f3.set_trigger(true); int hp0 = (int)z->hp.integer_part();
