@@ -29,7 +29,7 @@ using namespace fp;
 using Clock = std::chrono::steady_clock;
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false; int fire_rate = 200;
+	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false; int fire_rate = 200, range_pct = 200;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 };
@@ -43,7 +43,7 @@ struct Session {
 		r.reset(); player.reset(); fps.reset(); game.reset();
 		if (!a.game_map.empty()) {
 			replay = false; game = std::make_unique<Game>(); game->open(a.data, a.game_map, a.race, a.enemy, 1, a.fps);
-			if (a.fps) { fps = std::make_unique<Fps>(*game, 7, a.fire_rate); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
+			if (a.fps) { fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
 			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh);
 		} else {
 			player = std::make_unique<replay_player>(); player->init(dir_loader(a.data)); replay = a.replay;
@@ -263,6 +263,7 @@ int main(int argc, char** argv) {
 		else if (k == "--game") a.game_map = next();
 		else if (k == "--fps") a.fps = true;
 		else if (k == "--fire-rate") a.fire_rate = atoi(next());
+		else if (k == "--range") a.range_pct = atoi(next());
 		else if (k == "--weapons") a.weapons = next();
 		else if (k == "--race") a.race = parse_race(next());
 		else if (k == "--enemy") a.enemy = parse_race(next());
@@ -279,6 +280,7 @@ int main(int argc, char** argv) {
 	}
 	if (a.fps && a.game_map.empty()) die("--fps needs --game MAP");
 	if (a.fire_rate < 10 || a.fire_rate > 1000) die("--fire-rate must be 10..1000 (percent of the StarCraft fire rate)");
+	if (a.range_pct < 10 || a.range_pct > 1000) die("--range must be 10..1000 (percent of the StarCraft weapon range)");
 	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps] [--weapons MOD_DIR] | --map FILE) [--res WxH] [--window WxH] [--speed X] [--start-frame N] [--fullscreen] [--no-capture] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
@@ -417,14 +419,24 @@ int main(int argc, char** argv) {
 				if (vm_ok) st.check("every shot started the gun animation (" + std::to_string(vm.shots) + " of " + std::to_string(F_().shots) + ")", vm.shots == F_().shots);
 				if (vm_ok && have_audio) st.check("every shot played the fire sound and the extra layer (" + std::to_string(audio.started()) + " voices)", audio.started() >= 2 * F_().shots); });
 			K(3.1, "LMB up", [&] { push_button_up(SDL_BUTTON_LEFT); });
-			K(3.5, "enemy attacks", [&] { unit_t* h = F_().player(); hp_before = F_().player_hp(); for (int i = 0; i < 3; ++i) { unit_t* z = G().spawn(UnitTypes::Zerg_Zergling, xy{h->sprite->position.x + 24 + i * 6, h->sprite->position.y + 18}, G().enemy()); if (z) G().attack_as(G().enemy(), z, h); } });
-			K(5.0, "check pain", [&] { st.check("enemies hurt the hero (HP " + std::to_string(hp_before) + " -> " + std::to_string(F_().player_hp()) + ")", F_().player_hp() < hp_before);
+			static unit_id farid{}; static int far_hp0 = 0;
+			K(3.2, "spawn a far enemy", [&] { unit_t* h = F_().player(); if (!h) { st.check(std::string("hero alive to spawn the far enemy"), false); return; }
+				const double PI = 3.14159265358979323846, r = v.cam.heading * PI / 180; unit_t* z = nullptr;
+				for (double d : {450.0, 430.0, 470.0}) { if (z) break; z = G().spawn(UnitTypes::Zerg_Zergling, xy{(int)(h->sprite->position.x + std::cos(r) * d), (int)(h->sprite->position.y + std::sin(r) * d)}, G().enemy()); }
+				if (z) { farid = G().fn().get_unit_id(z); far_hp0 = (int)z->hp.integer_part(); }
+				st.check("spawned a Zergling beyond weapon range", z != nullptr);
 				if (vm_ok && have_audio) st.check("being hit played a pain voice (" + std::to_string(pain_plays) + ")", pain_plays >= 1); });
-			K(5.1, "overwhelm", [&] { unit_t* h = F_().player(); if (!h) return; for (int i = 0; i < 40; ++i) { unit_t* z = G().spawn(UnitTypes::Zerg_Zergling, xy{h->sprite->position.x + 20 + (i % 8) * 6, h->sprite->position.y + 22 + (i / 8) * 6}, G().enemy()); if (z) G().attack_as(G().enemy(), z, h); } });
-			K(8.0, "check death", [&] { st.check("the hero dies and the game notices", !F_().alive() && dead_seen);
+			K(3.5, "check red crosshair", [&] { st.check("crosshair is red on an enemy out of range", ov.crosshair == 0xFFFF3030); });
+			K(3.6, "LMB down (miss)", [&] { push_button(SDL_BUTTON_LEFT); });
+			K(5.2, "check miss", [&] { unit_t* z = G().fn().get_unit(farid);
+				st.check("firing out of range takes miss shots (" + std::to_string(F_().misses) + ")", F_().misses >= 1);
+				st.check("the far enemy is unhurt (HP " + std::to_string(far_hp0) + " -> " + std::to_string(z ? (int)z->hp.integer_part() : 0) + ")", z && (int)z->hp.integer_part() == far_hp0); });
+			K(5.3, "LMB up (miss)", [&] { push_button_up(SDL_BUTTON_LEFT); });
+			K(5.4, "overwhelm", [&] { unit_t* h = F_().player(); if (!h) return; for (int i = 0; i < 40; ++i) { unit_t* z = G().spawn(UnitTypes::Zerg_Zergling, xy{h->sprite->position.x + 20 + (i % 8) * 6, h->sprite->position.y + 22 + (i / 8) * 6}, G().enemy()); if (z) G().attack_as(G().enemy(), z, h); } });
+			K(7.0, "check death", [&] { st.check("the hero dies and the game notices", !F_().alive() && dead_seen);
 				if (vm_ok && have_audio) st.check("death played a voice line (" + std::to_string(death_plays) + ")", death_plays == 1); });
-			K(8.1, "restart", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_R, SDLK_r); });
-			K(8.6, "check restart", [&] { st.check("R restarts: a fresh hero at full HP (" + std::to_string(F_().player_hp()) + "/" + std::to_string(F_().player_max_hp()) + ")", F_().alive() && F_().player_hp() == F_().player_max_hp() && !dead_seen && v.follow != nullptr); });
+			K(7.1, "restart", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_R, SDLK_r); });
+			K(7.6, "check restart", [&] { st.check("R restarts: a fresh hero at full HP (" + std::to_string(F_().player_hp()) + "/" + std::to_string(F_().player_max_hp()) + ")", F_().alive() && F_().player_hp() == F_().player_max_hp() && !dead_seen && v.follow != nullptr); });
 			K(8.7, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 
@@ -488,9 +500,11 @@ int main(int argc, char** argv) {
 					auto is_enemy = [&](const unit_t* u) { return F.is_enemy(u); };
 					tgt = is_enemy(pick.unit) ? pick.unit : s.r->nearest_to_crosshair(v.cam, v.follow, 0.045 * a.rw, is_enemy); // crosshair target, with a little aim assist
 					enemy_aimed = tgt != nullptr; fire_ready = tgt && F.in_range(tgt);
-					if (firing && fire_ready) F.fire(const_cast<unit_t*>(tgt));
+					if (firing && tgt) {
+					if (F.fire(const_cast<unit_t*>(tgt)) == Fps::ShotResult::miss) { vm.shoot(have_audio ? &audio : nullptr); vm.miss(have_audio ? &audio : nullptr); }
 				}
-				ov.crosshair = fire_ready ? 0xFF40FF40 : enemy_aimed ? 0xFFFFA030 : 0xFFFFFFFF; // green: can hit it, orange: out of range
+				}
+				ov.crosshair = fire_ready ? 0xFF40FF40 : enemy_aimed ? 0xFFFF3030 : 0xFFFFFFFF; // green: in weapon range, red: out of range
 				if (F.shots > last_shots) { for (int i = last_shots; i < F.shots; ++i) vm.shoot(have_audio ? &audio : nullptr); last_shots = F.shots; }
 				int hp = F.player_hp();
 				if (last_hp >= 0 && hp < last_hp && hp > 0) { flash = 0.35; if (pain_cd <= 0) { vm.pain(have_audio ? &audio : nullptr); ++pain_plays; pain_cd = 0.6; } }

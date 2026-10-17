@@ -20,7 +20,7 @@ static Outcome fight(const std::string& data, const std::string& map, int max_fr
 		check(neutral > 0, "map scenery is kept (" + std::to_string(neutral) + " neutral units, e.g. mineral fields)");
 		unit_t* p = fps.player();
 		check(p && p->unit_type->id == UnitTypes::Hero_Jim_Raynor_Marine, "player is Jim Raynor's Marine (hero) with " + std::to_string(p ? (int)p->hp.integer_part() : 0) + " HP");
-		check(fps.range(p) >= 128 && fps.range(p) <= 256, "hero weapon range from OpenBW: " + std::to_string((int)fps.range(p)) + " px");
+		check(fps.range(p) >= 300 && fps.range(p) <= 360, "hero weapon range from OpenBW (scaled 200%): " + std::to_string((int)fps.range(p)) + " px");
 	}
 	int min_hp = 999; p0hp = (int)fps.player()->hp.integer_part(); bool wave_checked = false, ai_checked = false, range_checked = false; uint64_t sum = 1469598103934665603ull;
 	int f = 0;
@@ -41,7 +41,12 @@ static Outcome fight(const std::string& data, const std::string& map, int max_fr
 			unit_t* far = g.nearest(p->sprite->position.x, p->sprite->position.y, [&](unit_t* u) { return u->owner == g.enemy(); });
 			if (!far) { check(false, "an enemy exists to test fire() range gating on (none found at frame " + std::to_string(g.frame()) + ")"); continue; }
 			double d = std::hypot(far->sprite->position.x - p->sprite->position.x, far->sprite->position.y - p->sprite->position.y);
-			check(d > fps.range(p) + 40 ? !fps.fire(far) : true, "fire() refuses a target outside weapon range (distance " + std::to_string((int)d) + " px)"); }
+			if (d > fps.range(p) + 40) {
+				int hp_before = (int)far->hp.integer_part();
+				check(fps.fire(far) == Fps::ShotResult::miss, "fire() out of range takes the shot and reports a miss (distance " + std::to_string((int)d) + " px)");
+				check(fps.misses == 1 && (int)far->hp.integer_part() == hp_before, "the miss deals no damage (target HP " + std::to_string(hp_before) + " -> " + std::to_string((int)far->hp.integer_part()) + ")");
+				check(p->order_target.unit != far && p->order_type->id != Orders::AttackUnit, "the miss issues no attack order (hero order " + std::to_string((int)p->order_type->id) + ")");
+			} }
 		// shoot the nearest enemy in range
 		unit_t* tgt = g.nearest(p->sprite->position.x, p->sprite->position.y, [&](unit_t* u) { return u->owner == g.enemy() && fps.in_range(u); });
 		fps.set_trigger(tgt != nullptr); if (tgt) fps.fire(tgt);
@@ -68,10 +73,11 @@ int main(int argc, char** argv) {
 		  { int hpz = z ? (int)z->hp.integer_part() : 0; f2.set_trigger(false); for (int i = 0; i < 90; ++i) { d.step(); f2.tick(); }
 		    check(z && (int)z->hp.integer_part() == hpz && f2.shots == 0, "trigger up: the hero does not auto-fire at an enemy in range (target HP " + std::to_string(hpz) + " -> " + std::to_string(z ? (int)z->hp.integer_part() : 0) + ", " + std::to_string(f2.shots) + " shots)"); }
 		  f2.set_trigger(true);
-		  int hp0 = z ? z->hp.integer_part() : 0; bool fired = z && f2.fire(z); int hp_after = hp0, killed_at = -1; unit_id zid = d.fn().get_unit_id(z);
+		  int hp0 = z ? z->hp.integer_part() : 0; bool fired = z && f2.fire(z) == Fps::ShotResult::hit; int hp_after = hp0, killed_at = -1; unit_id zid = d.fn().get_unit_id(z);
 		  for (int i = 0; i < 400 && fired; ++i) { d.step(); f2.tick(); unit_t* zz = d.fn().get_unit(zid); if (!zz) { killed_at = i; break; } hp_after = std::min(hp_after, (int)zz->hp.integer_part()); if (i % 10 == 0) f2.fire(zz); }
 		  check(fired, "fire() accepted an in-range enemy");
 		  { const weapon_type_t* w = f2.player()->unit_type->ground_weapon.operator->(); check(w && w->cooldown <= 10, "hero fire rate: the weapon cooldown is scaled down (" + std::to_string(w ? w->cooldown : -1) + " frames)"); }
+		  check(f2.range(f2.player()) >= 300, "hero range: the weapon reaches at least 300 px (" + std::to_string((int)f2.range(f2.player())) + " px)");
 		  check(killed_at >= 0 || hp_after < hp0, "shooting damages the target (HP " + std::to_string(hp0) + " -> " + (killed_at >= 0 ? std::string("dead after ") + std::to_string(killed_at) + " frames" : std::to_string(hp_after)) + ")");
 		  check(f2.shots >= 1, "shots are counted from the weapon cooldown (" + std::to_string(f2.shots) + " shots fired in the duel)");
 		  check(killed_at >= 0 && f2.alive(), "the hero wins the duel and survives (HP " + std::to_string(f2.alive() ? (int)f2.player()->hp.integer_part() : 0) + ")"); }

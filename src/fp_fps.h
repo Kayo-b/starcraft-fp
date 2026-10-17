@@ -22,13 +22,14 @@ static inline FpsKinds fps_enemy_roster(race_t r) {
 
 class Fps {
 public:
-	int kills = 0, wave = 0, shots = 0; // shots: attacks the player has started (the weapon cooldown jumping up)
+	int kills = 0, wave = 0, shots = 0, misses = 0; // shots/misses: attacks the player has started (counted in fire())
 	// Enemies in wave w: melee from the start, ranged attackers join from wave 2. Capped and growing slowly so a lone hero stays winnable.
 	static int wave_melee(int w) { return std::min(6, 1 + (w + 1) / 2); }
 	static int wave_ranged(int w) { return w < 2 ? 0 : std::min(3, (w - 1) / 2); }
-	// fire_rate_percent: how fast the hero's weapon fires relative to the StarCraft data (100 = unchanged, 200 = twice as fast).
-	// Applied to the hero's own weapon entry only (hero weapons are used by no other unit).
-	explicit Fps(Game& g, uint32_t seed = 7, int fire_rate_percent = 200) : g_(g), rng_(seed), fire_rate_(std::max(10, fire_rate_percent)) {}
+	// fire_rate_percent / range_percent: how fast and how far the hero's weapon fires relative to the StarCraft data
+	// (100 = unchanged). Applied to the hero's own weapon entry only (hero weapons are used by no other unit).
+	explicit Fps(Game& g, uint32_t seed = 7, int fire_rate_percent = 200, int range_percent = 200)
+		: g_(g), rng_(seed), fire_rate_(std::max(10, fire_rate_percent)), range_pct_(std::max(10, range_percent)) {}
 
 	// Spawn the player's unit on their start location. Returns false if the map gave no usable start.
 	bool start() {
@@ -37,10 +38,11 @@ public:
 		unit_t* u = g_.spawn(fps_player_unit(g_.st().players[g_.owner()].race), at, g_.owner());
 		if (!u) return false;
 		player_id_ = g_.fn().get_unit_id(u); g_.select(u); roster_ = fps_enemy_roster(er);
-		// Faster hero fire rate (gameplay tuning): scale the hero's weapon cooldown down. Hero weapon types are used by
-		// no other unit, so mutating the loaded data only affects the hero. OpenBW's attack logic reads it every shot.
+		// Hero weapon tuning: fire rate and range are scaled on the hero's own weapon entry (used by no other unit).
+		// OpenBW's attack logic and weapon_max_range() read these values, so everything downstream follows.
 		if (weapon_type_t* w = const_cast<weapon_type_t*>(u->unit_type->ground_weapon.operator->())) {
 			w->cooldown = std::max(1, w->cooldown * 100 / fire_rate_);
+			w->max_range = std::max(32u, (unsigned)((uint64_t)w->max_range * range_pct_ / 100));
 		}
 		next_wave_frame_ = g_.frame() + 48; // short grace period
 		return true;
@@ -61,14 +63,28 @@ public:
 		return d <= range(p) + target->unit_type->dimensions.to.x; }
 	bool is_enemy(const unit_t* u) const { return u && u->owner == g_.enemy(); }
 
-	// Fire at `target` (an enemy in range): an attack order, re-issued only when the target changes.
-	bool fire(unit_t* target) {
+	enum class ShotResult { none, hit, miss };
+
+	// Fire at `target`. In range: the attack goes through OpenBW's own order/hit resolution (the hit may still miss per the
+	// game's rules). Out of range: the shot is taken anyway but always misses, without any order (an attack order would make
+	// the hero walk into range). The hero's own cooldown gates the rate of fire either way.
+	ShotResult fire(unit_t* target) {
 		// The target may come from the previous rendered frame; the simulation can have killed it since, and OpenBW rejects orders
 		// on dead targets (it throws), so check at the moment of use.
-		if (!target || g_.fn().unit_dead(target) || g_.fn().unit_dying(target)) return false;
-		unit_t* p = player(); if (!p || !is_enemy(target) || !in_range(target)) return false;
-		if (p->order_target.unit == target && (p->order_type->id == Orders::AttackUnit)) return true;
-		g_.select(p); return g_.smart_order(target->sprite->position, target);
+		if (!target || g_.fn().unit_dead(target) || g_.fn().unit_dying(target)) return ShotResult::none;
+		unit_t* p = player(); if (!p || !is_enemy(target)) return ShotResult::none;
+		if (p->ground_weapon_cooldown > kHold) return ShotResult::none; // kHold is our artificial no-auto-fire floor, not a real cooldown
+		const weapon_type_t* w = p->unit_type->ground_weapon.operator->();
+		if (!w) return ShotResult::none;
+		if (!in_range(target)) { // out of weapon range: the bolt cannot reach; take the shot and miss
+			p->ground_weapon_cooldown = w->cooldown;
+			++misses;
+			return ShotResult::miss;
+		}
+		if (p->order_target.unit == target && p->order_type->id == Orders::AttackUnit) return ShotResult::hit;
+		g_.select(p); g_.smart_order(target->sprite->position, target);
+		++shots;
+		return ShotResult::hit;
 	}
 
 	// The weapon only fires while the trigger is held. StarCraft units attack anything in range on their own, which is wrong for a
@@ -112,7 +128,7 @@ private:
 	}
 	static constexpr int kHold = 2; // after the per-frame decrement it is still > 0
 	bool trigger_ = false;
-	Game& g_; std::mt19937 rng_; int fire_rate_; unit_id player_id_{}; FpsKinds roster_{};
+	Game& g_; std::mt19937 rng_; int fire_rate_, range_pct_; unit_id player_id_{}; FpsKinds roster_{};
 	std::vector<unit_id> enemy_ids_; int next_wave_frame_ = 0, last_cooldown_ = 0;
 };
 

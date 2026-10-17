@@ -130,6 +130,7 @@ public:
 			extra_.push_back(load_ogg(mod_dir + "/Sounds/Weapons/Boltgun/ExtraFire" + n + ".ogg"));
 		}
 		for (int i = 1; i <= 9; ++i) { char n[16]; snprintf(n, sizeof n, "%02d", i); pain_.push_back(load_ogg(mod_dir + "/Sounds/Player/Pain/SternguardCharacterPain" + n + ".ogg")); }
+		for (int i = 2; i <= 6; ++i) { char n[16]; snprintf(n, sizeof n, "%02d", i); miss_.push_back(load_ogg(mod_dir + "/Sounds/Weapons/Boltgun/ProjectileImpact" + n + ".ogg")); }
 		for (int i = 1; i <= 6; ++i) { char n[16]; snprintf(n, sizeof n, "%02d", i); death_.push_back(load_ogg(mod_dir + "/Sounds/Player/Death/SternguardDeathVO" + n + ".ogg")); }
 		loaded_ = true; return true;
 	}
@@ -141,6 +142,7 @@ public:
 		if (audio) { audio->play(pick(fire_), 0.9f); audio->play(pick(extra_), 0.5f); }
 	}
 	void pain(Audio* audio) { if (loaded_ && audio) audio->play(pick(pain_), 0.9f); }
+	void miss(Audio* audio) { if (loaded_ && audio) audio->play(pick(miss_), 0.7f); }
 	void death(Audio* audio) { if (loaded_ && audio) audio->play(pick(death_), 1.0f); }
 
 	void update(double dt, bool moving) {
@@ -166,7 +168,7 @@ private:
 	static int total_tics() { return 2 + 1 + 1 + 1 + 1 + 1; }
 	const Pcm* pick(const std::vector<Pcm>& v) { return v.empty() ? nullptr : &v[rng_() % v.size()]; }
 	SDL_Texture* tex_[4] = {}; int w_ = 512, h_ = 256; bool loaded_ = false, firing_ = false; double t_ = 0, bob_t_ = 0, bob_amp_ = 0;
-	std::vector<Pcm> fire_, extra_, pain_, death_; std::mt19937 rng_{12345};
+	std::vector<Pcm> fire_, extra_, pain_, death_, miss_; std::mt19937 rng_{12345};
 };
 
 } // namespace fp
