@@ -1,5 +1,6 @@
 // Headless behaviour test for the FPS layer (fp_fps.h). Exit code 0 only if every check passes.
 #include "fp_fps.h"
+#include "fp_render.h"
 #include <iostream>
 
 using namespace fp;
@@ -126,6 +127,31 @@ int main(int argc, char** argv) {
 			for (int i = 0; i < 3; ++i) { unit_t* z = m.spawn(UnitTypes::Zerg_Zergling, xy{(int)hx + 2 + i * 6, (int)hy + 2}, m.enemy()); if (z) m.attack_as(m.enemy(), z, p); }
 			for (int i = 0; i < 120; ++i) { m.step(); f3.tick(); f3.drive(0, 0, 0.05); }
 			check(p->sprite->position.x == (int)std::lround(hx) && p->sprite->position.y == (int)std::lround(hy), "direct mode: enemies cannot shove the hero (position unchanged)"); }
+		}
+		// Levels: on Bottleneck's (3284,500) a plateau edge looks south down a cliff into a low trench (y 548-588).
+		// (Positions are Bottleneck's; on other maps this part is skipped.) The hero must see and
+		// target an enemy below from the edge, and one on the edge from below, within the look-up/down range (rendered).
+		if (std::string(argv[2]).find("Bottleneck") != std::string::npos) {
+			auto aim_check = [&](xy hero_at, xy enemy_at, double aim_above, const char* what) {
+				Game g2; g2.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f(g2, 7, 200, 200, 90, true); f.start();
+				f.place(hero_at.x, hero_at.y); g2.step(); f.tick();
+				unit_t* h = f.player(); unit_t* z = g2.spawn(UnitTypes::Zerg_Zergling, enemy_at, g2.enemy());
+				if (!h || !z) { check(false, std::string(what) + ": hero and enemy placed"); return; }
+				Assets assets(argv[1]); Renderer r(g2.st(), g2.fn(), assets, 640, 400); r.update_units();
+				const double PI = 3.14159265358979323846, dx = z->sprite->position.x - h->sprite->position.x, dy = z->sprite->position.y - h->sprite->position.y, dist = std::hypot(dx, dy);
+				const Terrain& T = r.terrain(); double proj = 320.0 / std::tan(r.params().fov * PI / 360.0);
+				double eye = r.params().eye_h + T.floor_height(h->sprite->position.x, h->sprite->position.y), target = T.floor_height(z->sprite->position.x, z->sprite->position.y) + aim_above;
+				Camera cam; cam.x = h->sprite->position.x; cam.y = h->sprite->position.y; cam.heading = std::atan2(dy, dx) * 180 / PI; cam.pitch = -(eye - target) * proj / dist;
+				std::vector<uint32_t> fb(640 * 400); r.render(cam, h, fb.data());
+				Pick pk = r.pick_center(cam, h); const unit_t* near = r.nearest_to_crosshair(cam, h, 0.045 * 640, [&](const unit_t* u) { return f.is_enemy(u); });
+				check(std::fabs(cam.pitch) <= kMaxPitch * 400 && (pk.unit == z || near == z) && f.in_range(z),
+				      std::string(what) + " (" + std::to_string((int)(eye - target)) + " px of height over " + std::to_string((int)dist) + " px, pitch " + std::to_string((int)cam.pitch) + ")");
+			};
+			// The hero walks up to the walkable edge (y 507 is the last walkable row; the hero is about 4 px wide); an enemy below
+			// is seen past the edge. From below (the high platform's edge at (2036,2204) over open main-level ground), an enemy
+			// as near the edge as OpenBW lets it stand shows its upper body over it.
+			aim_check(xy{3284, 503}, xy{3284, 572}, 6, "from a cliff edge the hero sees and targets an enemy below");
+			aim_check(xy{2036, 2464}, xy{2036, 2190}, 12, "from below the hero sees and targets an enemy at the cliff edge above");
 		}
 		// Death: with no one to defend, a large wave must kill the player and alive() must report it.
 		Game g; g.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps fps(g); fps.start();

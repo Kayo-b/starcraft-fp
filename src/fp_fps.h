@@ -146,6 +146,8 @@ public:
 		if (can(hx_, ny)) hy_ = ny; else vy_ = 0;
 	}
 	void halt() { vx_ = vy_ = 0; goal_ = false; }
+	// Direct mode: put the hero at (x,y) (tests, spawning); takes effect at the next tick().
+	void place(double x, double y) { hx_ = x; hy_ = y; halt(); }
 	double speed() { return std::hypot(vx_, vy_); }
 
 	// The weapon only fires while the trigger is held. StarCraft units attack anything in range on their own, which is wrong for a

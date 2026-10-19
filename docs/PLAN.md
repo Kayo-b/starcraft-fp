@@ -77,6 +77,15 @@ Status: `todo`, `doing`, `done`.
   experimentally units too (Zealot, Dragoon, Marine, Firebat, Zergling, Hydralisk, Ultralisk and the FPS heroes;
   rest pose, turned to the unit's heading; `--model-units` starts there). The FPS self-test checks the key and can
   save screenshots (`--screenshot F.ppm`: `F_crosshair.ppm`, `F_fight.ppm`).
+- **M3.7** `done` Fighting across levels (play check). The drop is at the walkable edge, so a unit on top can look over
+  it: a draped cliff falls three quarters of its height within 3 cells of the edge and runs out as an apron to its
+  foot; a block cliff's whole band is apron at the foot's level, its wall standing at the walkable edge (the contour
+  follows ground a level above an apron; the wall's art is the band in front of it). Corners only join surfaces within
+  0.4 level of each other (no twisted sheets between an apron and the plateau). Ramps blend over 20 cells each side
+  (~20 degrees). Look up/down: the horizon shifts up to 2.5 render heights (~64 degrees). fpstest checks, rendered on
+  Bottleneck: from the edge the hero sees and targets an enemy in the trench below, and from the open ground below one
+  standing at the high platform's edge. Line of sight is real: from 12 px eye height a steep look down needs the hero
+  at the edge, and an enemy far back from an edge is hidden from below.
 - **M3.6** `todo` Animated unit models: bones and sequences (Stand/Walk/Attack/Death) driven by OpenBW state, heading,
   per-unit scale, death models; sprites for units without a model. Decide after a play check of M3.5.
 - **M4** `todo` All sprites as the original draws them: `sprites_on_tile_line` (units, bullets, explosions, deaths,
