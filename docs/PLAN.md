@@ -44,6 +44,9 @@ Status: `todo`, `doing`, `done`.
   cell holds the straight line through it; face art is read along the normal snapped to the iso directions. Flat
   cells take a fast path: terrain 2.1 ms in the demo-replay base view, sprites another ~2 ms there (big buildings up
   close: M4). Found and fixed: R kept last frame's crosshair pick into the freed game (crash after restart).
+- **M2.2** `done` Map edge: beyond the border the world continues as the map's mirror image, darkened (96 cells),
+  then a plain ground plane in the map's average colour; resources near the edge stood against the sky below the
+  horizon and looked like they floated. 3.2 ms on Bottleneck, 4.4 ms in the demo base view (sprites: M4).
 - **M3** `todo` Faces from the map's art: a south-facing cliff's face is its band's HD art read from the plateau edge
   down (StarCraft's view is a vertical oblique projection, so no un-skew); diagonal cliffs along the band; back faces
   reuse the nearest south column, mirrored; band tops from the nearest high ground. The SD face path goes.
@@ -53,7 +56,7 @@ Status: `todo`, `doing`, `done`.
 - **M5** `todo` Doodads standing up: each placed doodad's art rebuilt from its cv5 group and drawn as an upright quad
   on its footprint; obstacle heights from the art.
 - **M6** `todo` Tileset sweep: golden views for all 8 tilesets, per-tileset water/lava/ice/space void, sky per
-  tileset, map edges as void/fog. Accepted when every pixel is written, no face stripes, every cliff is visible from
+  tileset. Accepted when every pixel is written, no face stripes, every cliff is visible from
   both sides and the budget holds.
 
 ### Phase 2 — base FPS (`fp-feel-*`)

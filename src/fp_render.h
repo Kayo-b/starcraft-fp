@@ -61,6 +61,11 @@ public:
 		assets_.set_tileset(gs_.tileset_index);
 		terrain_.level_h = p_.level_h;
 		rebuild_terrain();
+		{ // the map's average colour, for the ground plane beyond the mirrored strip
+			double a[3] = {0, 0, 0}; int n = 0;
+			for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) { uint8_t t[3]; tile_sample((x + 0.5) * gs_.map_width / 64.0, (y + 0.5) * gs_.map_height / 64.0, t); for (int k = 0; k < 3; ++k) a[k] += t[k]; ++n; }
+			for (int k = 0; k < 3; ++k) avg_[k] = a[k] / n;
+		}
 	}
 	int width() const { return W_; }
 	int height() const { return H_; }
@@ -101,6 +106,15 @@ public:
 		}
 	}
 
+	// Beyond the map edge the world continues as the map's mirror image (darkened by the renderer), so the ground does
+	// not stop at the border: things standing near it would otherwise stand against the sky.
+	static int mirror_index(int c, int n) { int m = ((c % (2 * n)) + 2 * n) % (2 * n); return m < n ? m : 2 * n - 1 - m; }
+	static double mirror_coord(double v, double n) { double m = std::fmod(v, 2 * n); if (m < 0) m += 2 * n; return m < n ? m : std::max(0.0, 2 * n - m - 1e-6); }
+	bool outside_px(double x, double y) const { return x < 0 || y < 0 || x >= gs_.map_width || y >= gs_.map_height; }
+	void world_sample(double fx, double fy, uint8_t out[3]) const {
+		if (!outside_px(fx, fy)) tile_sample(fx, fy, out);
+		else tile_sample(mirror_coord(fx, gs_.map_width), mirror_coord(fy, gs_.map_height), out);
+	}
 	void tile_sample(double fx, double fy, uint8_t out[3], bool clamp = false) const {
 		int tx = (int)std::floor(fx / 32), ty = (int)std::floor(fy / 32);
 		if (clamp) { tx = std::max(0, std::min((int)gs_.map_tile_width - 1, tx)); ty = std::max(0, std::min((int)gs_.map_tile_height - 1, ty)); }
@@ -229,8 +243,9 @@ private:
 			for (int sy = r0; sy < r1; ++sy) {
 				double den = sy + 0.5 - hz + k * proj; if (den <= 1e-9) continue;
 				double d = std::max(d0, std::min(d1, (eh - h0 + k * d0) * proj / den));
-				uint8_t t[3]; tile_sample(cam.x + rdx * d, cam.y + rdy * d, t);
-				put(sy, d, t[0], t[1], t[2]);
+				double px = cam.x + rdx * d, py = cam.y + rdy * d; uint8_t t[3]; world_sample(px, py, t);
+				double k = outside_px(px, py) ? kOutside : 1.0;
+				put(sy, d, t[0] * k, t[1] * k, t[2] * k);
 			}
 			if (r0 < r1) top = r0;
 		};
@@ -247,17 +262,19 @@ private:
 				// higher points (StarCraft draws a cliff's face onto the ground beside its foot). Inward is the face normal
 				// snapped to the isometric directions, so every cell along a straight wall reads the art the same way.
 				double into = (hp - h0) + 0.5;
-				uint8_t t[3]; tile_sample(hx - snx * into, hy - sny * into, t, true);
-				double k = (0.62 + 0.38 * (hp - h0) / std::max(1e-6, h1 - h0)) * light; // darker at the foot
+				uint8_t t[3]; world_sample(hx - snx * into, hy - sny * into, t);
+				double k = (0.62 + 0.38 * (hp - h0) / std::max(1e-6, h1 - h0)) * light * (outside_px(hx, hy) ? kOutside : 1.0); // darker at the foot
 				put(sy, d, t[0] * k, t[1] * k, t[2] * k);
 			}
 			top = r0;
 		};
 		// Draw cell (cx,cy) between ray parameters ta..tb (cell units); a split cell is two pieces with its wall between.
 		// Returns the drawn height where the ray leaves the cell.
+		auto mirrored = [&](int cx, int cy) -> const Terrain::Cell& { return terrain_.at(mirror_index(cx, terrain_.w), mirror_index(cy, terrain_.h)); };
 		auto span = [&](int cx, int cy, double ta, double tb) -> double {
-			const Terrain::Cell& cell = terrain_.at(cx, cy);
-			if (cell.flags & Terrain::flat) { surface(cell.h, cell.h, ta * kCell, tb * kCell); return cell.h; }
+			bool out = cx < 0 || cy < 0 || cx >= terrain_.w || cy >= terrain_.h;
+			const Terrain::Cell& cell = out ? mirrored(cx, cy) : terrain_.at(cx, cy);
+			if (out || (cell.flags & Terrain::flat)) { surface(cell.h, cell.h, ta * kCell, tb * kCell); return cell.h; } // the mirror is drawn flat-topped
 			double ua = gx + rdx * ta - cx, va = gy + rdy * ta - cy, ub = gx + rdx * tb - cx, vb = gy + rdy * tb - cy;
 			const Terrain::Split* sp = terrain_.split(cx, cy);
 			int sa = sp ? (sp->nx * ua + sp->ny * va > sp->c) : -1, sb = sp ? (sp->nx * ub + sp->ny * vb > sp->c) : -1;
@@ -275,20 +292,30 @@ private:
 			surface(b0, b1, th * kCell, tb * kCell);
 			return b1;
 		};
-		double t_in = 0;
+		double t_in = 0, h_last = 0; int out_steps = 0; bool left = false;
 		for (int step = 0; step < 16384 && top > 0; ++step) {
 			double t_out = std::min(sdx, sdy);
-			double h_exit = span(mx, my, t_in, std::min(t_out, maxd / kCell));
+			double h_exit = span(mx, my, t_in, std::min(t_out, maxd / kCell)); h_last = h_exit;
 			if (t_out * kCell >= maxd) break;
 			int pmx = mx, pmy = my;
 			if (sdx < sdy) { sdx += ddx; mx += stx; } else { sdy += ddy; my += sty; }
-			if (terrain_.at(mx, my).kind == Terrain::edge) break; // left the map
-			const Terrain::Cell& nc = terrain_.at(mx, my);
-			double h_entry = (nc.flags & Terrain::flat) ? nc.h : terrain_.side_at(mx, my, gx + rdx * t_out - mx, gy + rdy * t_out - my).h;
+			bool out = mx < 0 || my < 0 || mx >= terrain_.w || my >= terrain_.h;
+			if (out && ++out_steps > kMirrorCells) { left = true; t_in = t_out; break; } // the plane below takes over
+			const Terrain::Cell& nc = out ? mirrored(mx, my) : terrain_.at(mx, my);
+			double h_entry = (out || (nc.flags & Terrain::flat)) ? nc.h : terrain_.side_at(mx, my, gx + rdx * t_out - mx, gy + rdy * t_out - my).h;
 			if (h_entry > h_exit) face(h_exit, h_entry, t_out * kCell, pmx - mx, pmy - my);
 			t_in = t_out;
 		}
-		// rows nothing covered: sky above the horizon, fog below it (beyond the view distance or the map edge)
+		// Past the mirrored strip: a plain ground plane at the last height, in the map's average colour, fogged.
+		if (left) {
+			int r0 = std::max(0, first_row(row_at(maxd, h_last))), r1 = std::min(top, first_row(row_at(t_in * kCell, h_last)));
+			for (int sy = r0; sy < r1; ++sy) {
+				double den = sy + 0.5 - hz; if (den <= 1e-9) continue;
+				put(sy, std::max(t_in * kCell, (eh - h_last) * proj / den), avg_[0] * kOutside, avg_[1] * kOutside, avg_[2] * kOutside);
+			}
+			if (r0 < r1) top = r0;
+		}
+		// rows nothing covered: sky above the horizon, fog below it (beyond the view distance)
 		for (int sy = 0; sy < top; ++sy) {
 			double t = std::max(0.0, std::min(1.0, sy / std::max(1.0, hz)));
 			size_t i = (size_t)sy * W_ + sx;
@@ -297,6 +324,8 @@ private:
 		}
 	}
 	static constexpr double kFog[3] = {100, 120, 170}; // the sky's colour at the horizon
+	static constexpr double kOutside = 0.55;           // brightness of the mirrored world beyond the map edge
+	static constexpr int kMirrorCells = 96;            // how far rays draw the mirror past the edge (cells) before the plain plane
 
 
 	View view(const Camera& cam) const {
@@ -396,7 +425,7 @@ private:
 
 	state& st_; game_state& gs_; state_functions& fn_; Assets& assets_;
 	int W_, H_; RenderParams p_; const HdTiles* tiles_;
-	Terrain terrain_; int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_;
+	Terrain terrain_; int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_; double avg_[3] = {0, 0, 0};
 	std::vector<UnitView> units_; std::vector<float> zbuf_; // per-pixel depth of the terrain (kFar for sky and fog)
 };
 
