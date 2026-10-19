@@ -8,7 +8,7 @@ using namespace fp;
 
 struct Args {
 	std::string data, input, out = "out/fp.ppm", topdown;
-	int frames = 0, unit = -1, w = 640, h = 400; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false;
+	int frames = 0, unit = -1, spot = -1, w = 640, h = 400; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false, print_tileset = false;
 };
 static void die(const char* m) { std::cerr << m << "\n"; std::exit(2); }
 
@@ -28,20 +28,44 @@ int main(int argc, char** argv) {
 		else if (k == "--out") a.out = next();
 		else if (k == "--topdown") a.topdown = next();
 		else if (k == "--size") sscanf(next(), "%dx%d", &a.w, &a.h);
+		else if (k == "--print-tileset") a.print_tileset = true;
+		else if (k == "--spot") a.spot = atoi(next());
 		else die("unknown option");
 	}
-	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm]");
+	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm] [--print-tileset]");
 	try {
 		replay_player player;
 		player.init(dir_loader(a.data));
 		if (a.replay) { player.load_replay_file(a.input); for (int i = 0; i < a.frames && !player.is_done(); ++i) player.next_frame(); }
 		else { player.load_map_file(a.input); for (int i = 0; i < a.frames; ++i) static_cast<game_player&>(player).next_frame(); }
+		if (a.print_tileset) { // map survey: tileset and size only, no rendering
+			auto& gs = *player.st().game;
+			std::cout << "tileset " << gs.tileset_index << " " << tileset_name(gs.tileset_index) << ", map " << gs.map_tile_width << "x" << gs.map_tile_height << " tiles\n";
+			return 0;
+		}
 		Assets assets(a.data);
 		Renderer r(player.st(), player.funcs(), assets, a.w, a.h);
 		r.update_units();
 		std::cout << "map " << r.map_w() << "x" << r.map_h() << " px, units " << r.units().size() << "\n";
 		Camera cam; cam.heading = a.heading; cam.pitch = a.pitch; const unit_t* hide = nullptr;
-		if (a.cam_x >= 0) { cam.x = a.cam_x; cam.y = a.cam_y; }
+		if (a.spot >= 0) {
+			// Deterministic spots for golden views: the start locations, then the map centre and the four quarter points,
+			// each moved to the nearest floor the camera can stand on.
+			auto& gs = *player.st().game; int W = (int)gs.map_width, H = (int)gs.map_height;
+			std::vector<xy> spots;
+			for (auto& p : gs.start_locations) if (p.x || p.y) spots.push_back(p);
+			for (xy p : {xy{W / 2, H / 2}, xy{W / 4, H / 4}, xy{3 * W / 4, H / 4}, xy{W / 4, 3 * H / 4}, xy{3 * W / 4, 3 * H / 4}}) spots.push_back(p);
+			if (a.spot >= (int)spots.size()) die("--spot: no such spot on this map");
+			xy p = spots[a.spot]; bool found = false;
+			for (int ring = 0; ring <= 64 && !found; ++ring) for (int dy = -ring; dy <= ring && !found; ++dy) for (int dx = -ring; dx <= ring && !found; ++dx) {
+				if (std::max(std::abs(dx), std::abs(dy)) != ring) continue;
+				double x = p.x + dx * 8.0, y = p.y + dy * 8.0;
+				if (r.can_stand(x, y, 8)) { cam.x = x; cam.y = y; found = true; }
+			}
+			if (!found) die("--spot: no floor near that spot");
+			std::cout << "spot " << a.spot << " of " << spots.size() << " at (" << cam.x << "," << cam.y << ")\n";
+		}
+		else if (a.cam_x >= 0) { cam.x = a.cam_x; cam.y = a.cam_y; }
 		else {
 			const UnitView* eye = nullptr; int idx = 0;
 			for (auto& u : r.units()) { if ((a.unit >= 0 && idx == a.unit) || (a.unit < 0 && u.owner < 8)) { eye = &u; break; } ++idx; }

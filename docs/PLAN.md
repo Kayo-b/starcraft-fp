@@ -20,7 +20,7 @@ Base: this repo (`main`), OpenBW headers in `../starcraft-data/openbw`, extracte
 Status: `todo`, `doing`, `done`.
 
 ### Phase 0 — baseline green (`fp-baseline`)
-- **M0** `doing` Dead-target guard in `Fps` (the fpstest crash, and the same stale `pick.unit` in `fp_play`); vx4ex flip
+- **M0** `done` Dead-target guard in `Fps` (the fpstest crash, and the same stale `pick.unit` in `fp_play`); vx4ex flip
   bit in `SdTiles::texel`; `--sim-speed` (was shadowed by `--speed`); usage string and header comments; golden-view
   harness (`tools/golden.sh`, `fp_view --print-tileset`).
 
@@ -72,4 +72,6 @@ Status: `todo`, `doing`, `done`.
 - Water, lava and the space platform's void need tileset-specific classification (cv5 groups are not documented here
   yet; M1 starts with a survey).
 - Large buildings are flat billboards; up close they may still read poorly after the size clamp.
+- The stock maps cover four tilesets (badlands, platform, AshWorld, Jungle). Installation, Desert, Ice and Twilight need
+  campaign or Brood War maps for M6.
 - OpenBW's licence is unresolved: fine for local play, blocks distribution.

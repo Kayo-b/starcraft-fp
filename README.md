@@ -49,8 +49,8 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
 - Mouse look; WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; P pause; `=`/`-` sim speed
   (x0.125..x16); R restart; ESC release/capture the mouse; F12 screenshot (`fp_shot_NNN.ppm` in the working directory); Q quit.
 - `--race R` / `--enemy R` (terran, protoss, zerg; default terran vs protoss), `--res WxH` render resolution (default 640x400),
-  `--window WxH` (default 1280x800), `--fullscreen`, `--no-capture` leaves your pointer alone, `--no-vsync` turns off the 60 Hz vsync cap
-  (soft-capped at 240 fps; the software renderer runs at ~1-2 ms/frame).
+  `--window WxH` (default 1280x800), `--fullscreen`, `--sim-speed X` starting sim speed (0.125..16), `--no-capture` leaves your
+  pointer alone, `--no-vsync` turns off the 60 Hz vsync cap (soft-capped at 240 fps; the software renderer runs at ~1-3 ms/frame).
 
 ## External assets and licences (nothing below is in this repo)
 - **StarCraft data**: extracted by you from your own install (`tools/casc_get.cjs`; `bw-casclib` has a buffer-size bug, see the script header).
@@ -65,8 +65,12 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
 `fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
 Window tests (they open a window briefly): `fp_play ... --selftest-input` for replay, `--game MAP` and `--game MAP --fps --weapons MOD_DIR`
 (use `SDL_AUDIODRIVER=dummy` to stay silent); `--autotest` checks collision against OpenBW `is_walkable`.
+Golden views: `tools/golden.sh LABEL` renders fixed first-person views (`fp_view --spot K`: start locations, map centre,
+quarter points; four headings) of one stock map per tileset plus the demo replay into `out/golden/LABEL/*.png` contact sheets,
+to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset.
 
 ## Roadmap / possible goals
+The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLAN.md). Ideas beyond it:
 - **Hero + squad mode** (idea, not started): play as one hero unit in first person while commanding other units (move, attack-move, hold position,
   follow) and fighting alongside them. Looks achievable: possession, crosshair picking and OpenBW's order API (`action_order`, `action_hold_position`,
   `action_stop`) already exist here. Needs: a squad concept (OpenBW selects at most 12 units per order, so group in 12s), an order wheel or hotkeys that
