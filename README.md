@@ -50,7 +50,8 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
   (x0.125..x16); R restart; ESC release/capture the mouse; F12 screenshot (`fp_shot_NNN.ppm` in the working directory); Q quit.
 - `--race R` / `--enemy R` (terran, protoss, zerg; default terran vs protoss), `--res WxH` render resolution (default 640x400),
   `--window WxH` (default 1280x800), `--fullscreen`, `--sim-speed X` starting sim speed (0.125..16), `--no-capture` leaves your
-  pointer alone, `--no-vsync` turns off the 60 Hz vsync cap (soft-capped at 240 fps; the software renderer runs at ~1-3 ms/frame).
+  pointer alone, `--no-vsync` turns off the 60 Hz vsync cap (soft-capped at 240 fps; the software renderer runs at ~2-3.5 ms/frame). `--view-dist PX`, `--eye PX`, `--level-h PX` (see
+  Rendering model).
 
 ## External assets and licences (nothing below is in this repo)
 - **StarCraft data**: extracted by you from your own install (`tools/casc_get.cjs`; `bw-casclib` has a buffer-size bug, see the script header).
@@ -92,13 +93,16 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
     python3 tools/ppm2png.py out/fp.ppm out/fp.png
 
 ## Rendering model (prototype choices, not StarCraft facts)
-The terrain is a heightfield of minitiles (`src/fp_terrain.h`): walkable cells at their level (ramps as slopes), unwalkable cells as cliffs
-(topped at the higher level they separate), obstacles, water or void. The renderer below still draws it the older way until M2 of the plan.
-Unwalkable minitiles (8 px) are walls. Walkable minitiles are floors at one of the four StarCraft height levels (low/middle/high/very
-high, from the tile height flags), 32 px apart; walkable level changes render as step faces. Eye height is 12 px above the floor under
-the camera; FOV 66 degrees; floors and walls darken with distance. Units are flat billboards of their HD sprite frame, grounded on the
-level they stand on and anchored at the box centre like the original renderer. Works with any map OpenBW can load (all eight
-tilesets via their HD DDS data).
+- Terrain: a heightfield of minitiles (8 px, `src/fp_terrain.h`). Walkable cells sit at their StarCraft level (low/mid/high, 64 px apart),
+  ramps are slopes; unwalkable cells are solid blocks: cliffs topped at the higher level they separate, obstacles half a level above
+  theirs (one and a half with vf4's "very high" bit), water just below its shore, the space platform's void far below.
+- Renderer: each screen column marches its ray through the heightfield front to back, drawing a cell's top where it is below the eye
+  and its face where it rises above the cell before; rays go on past cliffs to `--view-dist` (default 3000 px), so high ground shows
+  from below at full height and low ground shows from above. Fog closes in toward the view distance. Every pixel keeps its depth, so
+  sprites hide behind terrain per pixel and the crosshair picks units and floor points through it.
+- Eye 12 px above the (smoothly interpolated) floor under the camera; FOV 66 degrees. Units are flat billboards of their HD sprite frame,
+  standing on the floor under them and anchored at the box centre like the original renderer. Works with any map OpenBW can load (all
+  eight tilesets via their HD DDS data). `--eye PX`, `--level-h PX` and `--view-dist PX` tune the look (fp_play and fp_view).
 
 ## HD formats (verified on real 1.23.10.13515 files, 2026-10-17)
 - `TileSet/<name>.dds.vr4`: u16 frame count @4 (= number of megatiles, same index space as `.vf4`/`.vx4ex`, 7,038 for Jungle);
@@ -119,9 +123,8 @@ tilesets via their HD DDS data).
 ## Known limits
 - The free camera and the `--fps-move-shoot` hero collide with terrain only (not units/buildings/resources); a possessed unit and the
   order-driven FPS hero collide like any StarCraft unit.
-- Walls show one 32-px step from below (upper cliff tiers are not rendered); creep effects and water animation are not drawn.
-- Wall faces use the classic SD terrain art (vr4 + palette): the bottom half of the boundary minitile's image. That is the original
-  game's own face art, at classic resolution; floors stay HD. Where the SD art is blank (space/void), a shaded rock fallback is used.
+- Faces read the solid cell's HD art inward from the face, a stand-in until M3 maps each cliff band onto its face; the tops of cliff
+  bands show the band's (face) art. Creep effects and water animation are not drawn; the map edge fades to fog.
 - Walkability and height levels are read once per map load; creep-induced changes during play are not tracked.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).
 - Only the main image of each sprite is drawn (no shadows/overlays).

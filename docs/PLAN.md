@@ -32,9 +32,11 @@ Status: `todo`, `doing`, `done`.
   south-facing cliff bands are 4-16 minitiles deep, north-facing 2-5; cv5 type 1 = doodad on every tileset, 5 = water
   on Badlands and Jungle, 2 = the space platform's void. The renderer's grid now comes from the model (per-minitile
   levels, three of them). Faces' art sources move to M3, which needs them.
-- **M2** `todo` Heightfield raycaster: front-to-back cells with a per-column clip row, faces and tops at any height,
-  rays continue past cliffs to `--view-dist`; per-pixel depth buffer for sprites and picking; distance fog; eye and
-  unit grounding from the heightfield. Budget: 4 ms at 640x400.
+- **M2** `done` Heightfield raycaster: front-to-back cells with a per-column clip row, faces and tops at any height,
+  rays continue past cliffs to `--view-dist`; per-pixel depth buffer for sprites and picking; fog toward the horizon
+  colour; eye and unit grounding from a bilinear floor height. 2.2-3.3 ms at 640x400 (autotest). A level is 64 px
+  (`--level-h`; 32 read flat at eye height). Faces read the solid cell's art inward as a stand-in for M3. Found and
+  fixed: water took level 2 (the per-level BFS never enters liquids); fp_terraintest now checks liquids lie low.
 - **M3** `todo` Faces from the map's art: a south-facing cliff's face is its band's HD art read from the plateau edge
   down (StarCraft's view is a vertical oblique projection, so no un-skew); diagonal cliffs along the band; back faces
   reuse the nearest south column, mirrored; band tops from the nearest high ground. The SD face path goes.

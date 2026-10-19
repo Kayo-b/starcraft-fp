@@ -8,7 +8,7 @@ using namespace fp;
 
 struct Args {
 	std::string data, input, out = "out/fp.ppm", topdown, heightmap;
-	int frames = 0, unit = -1, spot = -1, w = 640, h = 400; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false, print_tileset = false;
+	int frames = 0, unit = -1, spot = -1, w = 640, h = 400; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false, print_tileset = false; RenderParams rp;
 };
 static void die(const char* m) { std::cerr << m << "\n"; std::exit(2); }
 
@@ -31,9 +31,12 @@ int main(int argc, char** argv) {
 		else if (k == "--print-tileset") a.print_tileset = true;
 		else if (k == "--spot") a.spot = atoi(next());
 		else if (k == "--heightmap") a.heightmap = next();
+		else if (k == "--eye") a.rp.eye_h = atof(next());
+		else if (k == "--level-h") a.rp.level_h = atof(next());
+		else if (k == "--view-dist") a.rp.view_dist = atof(next());
 		else die("unknown option");
 	}
-	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm] [--heightmap F.ppm] [--print-tileset]");
+	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm] [--heightmap F.ppm] [--print-tileset] [--eye PX] [--level-h PX] [--view-dist PX]");
 	try {
 		replay_player player;
 		player.init(dir_loader(a.data));
@@ -45,7 +48,7 @@ int main(int argc, char** argv) {
 			return 0;
 		}
 		Assets assets(a.data);
-		Renderer r(player.st(), player.funcs(), assets, a.w, a.h);
+		Renderer r(player.st(), player.funcs(), assets, a.w, a.h, a.rp);
 		r.update_units();
 		std::cout << "map " << r.map_w() << "x" << r.map_h() << " px, units " << r.units().size() << "\n";
 		Camera cam; cam.heading = a.heading; cam.pitch = a.pitch; const unit_t* hide = nullptr;
