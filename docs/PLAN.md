@@ -12,7 +12,9 @@ Base: this repo (`main`), OpenBW headers in `../starcraft-data/openbw`, extracte
 4. Terrain textures come only from the map's own HD art. Units are 2D billboards of the HD anim art, except where a
    3D model exists: SC2 `.m3` models of the Brood War roster from a local copy of the SC Evo Complete mod (MIT for the
    mod's own work; the models are kitbashes of Blizzard art: local use only, never committed). Buildings and mineral
-   fields first (revised 2026-10-19: billboards of them fit a first-person view worst).
+   fields first (revised 2026-10-19: billboards of them fit a first-person view worst). The 2D sprites stay available
+   for everything: the M key switches sprites only / 3D buildings (default) / 3D buildings and units, so each kind can
+   stay 2D where it reads better; buildings stay 3D unless their sprites can be made to work in first person.
 5. Free movement is the `--fps` default; `--fps-order-move` keeps the order-driven mode; `--fps-move-shoot` stays
    accepted as an alias.
 6. Commander mode (FPS + simplified RTS) is a new mode, `--commander`, planned in detail once phases 1-2 are accepted.
@@ -71,6 +73,10 @@ Status: `todo`, `doing`, `done`.
   buildings stay sprites. Scaled so the model's footprint covers the unit's (by area). Zealot spike: renders
   correctly at ~22 px per model unit (`fp_view --model ... --model-at X,Y,YAW --model-scale 22`). Demo base view
   5.1-5.7 ms with models (4.9 with sprites). Found and fixed: a model under the crosshair beat a sprite in front of it.
+- **M3.5b** `done` Model modes, switchable while playing (M): sprites only, buildings and minerals (default), and
+  experimentally units too (Zealot, Dragoon, Marine, Firebat, Zergling, Hydralisk, Ultralisk and the FPS heroes;
+  rest pose, turned to the unit's heading; `--model-units` starts there). The FPS self-test checks the key and can
+  save screenshots (`--screenshot F.ppm`: `F_crosshair.ppm`, `F_fight.ppm`).
 - **M3.6** `todo` Animated unit models: bones and sequences (Stand/Walk/Attack/Death) driven by OpenBW state, heading,
   per-unit scale, death models; sprites for units without a model. Decide after a play check of M3.5.
 - **M4** `todo` All sprites as the original draws them: `sprites_on_tile_line` (units, bullets, explosions, deaths,

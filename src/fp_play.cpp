@@ -11,11 +11,12 @@
 //   --fire-rate N / --range N / --speed N (percent of the StarCraft data, 10..1000)
 // Other options: --race R, --enemy R, --res WxH, --window WxH, --fullscreen, --sim-speed X, --start-frame N,
 //   --no-capture, --no-vsync, --view-dist PX, --eye PX, --level-h PX, --selftest-input, --autotest [--screenshot F.ppm],
-//   --models DIR (SC Evo Complete's SCEvo_Assets.SC2Mod/Base.SC2Assets: buildings and minerals as 3D models, fp_models.h)
+//   --models DIR (SC Evo Complete's SCEvo_Assets.SC2Mod/Base.SC2Assets: buildings and minerals as 3D models, fp_models.h),
+//   --model-units (experimental: units with a model too, in its rest pose)
 //
 // Controls (game mode in brackets, FPS mode in braces)
 //   Mouse look; W/A/S/D move (Shift = run); ESC release/capture mouse; Q quit; F12 screenshot (PPM in cwd)
-//   P pause, = / - sim speed, R restart, F free camera, TAB next unit
+//   P pause, = / - sim speed, R restart, F free camera, TAB next unit, M cycle 3D models (off / buildings / buildings + units)
 //   [LMB select unit under crosshair (Shift adds), RMB order (move/attack/gather/rally), E possess/release the selected unit,
 //    WASD then moves the possessed unit, T train worker, Y train combat unit, B build supply, X stop]
 //   {LMB (hold) fire, RMB move to the crosshair; the camera stays on the hero}
@@ -37,7 +38,7 @@ using namespace fp;
 using Clock = std::chrono::steady_clock;
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons, models; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
+	std::string data, input, game_map, screenshot, weapons, models; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false, model_units = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 	RenderParams rp;
@@ -49,6 +50,7 @@ static race_t parse_race(const std::string& s) { if (s == "terran") return race_
 struct Session {
 	std::unique_ptr<replay_player> player; std::unique_ptr<Game> game; std::unique_ptr<Fps> fps; std::unique_ptr<Renderer> r; bool replay = true;
 	ModelLibrary* models = nullptr; // 3D models (kept across restarts: loaded models stay cached)
+	int model_mode = Renderer::kModelsBuildings; // kept across restarts; M cycles it
 	void open(Assets& assets, const Args& a) {
 		r.reset(); player.reset(); fps.reset(); game.reset();
 		if (!a.game_map.empty()) {
@@ -61,7 +63,7 @@ struct Session {
 			r = std::make_unique<Renderer>(player->st(), player->funcs(), assets, a.rw, a.rh, a.rp);
 			for (int i = 0; i < a.start_frame && !done(); ++i) step();
 		}
-		if (models) r->set_models(models);
+		if (models) { r->set_models(models); r->set_model_mode(model_mode); }
 		r->update_units();
 	}
 	bool live() const { return game != nullptr; }
@@ -292,6 +294,7 @@ int main(int argc, char** argv) {
 		else if (k == "--screenshot") a.screenshot = next();
 		else if (k == "--view-dist") a.rp.view_dist = atof(next());
 		else if (k == "--models") a.models = next();
+		else if (k == "--model-units") a.model_units = true;
 		else if (k == "--eye") a.rp.eye_h = atof(next());
 		else if (k == "--level-h") a.rp.level_h = atof(next());
 		else die("unknown option");
@@ -302,12 +305,12 @@ int main(int argc, char** argv) {
 	if (a.speed_pct < 10 || a.speed_pct > 1000) die("--speed must be 10..1000 (percent of the StarCraft movement speed)");
 	if (a.speed < 0.125 || a.speed > 16) die("--sim-speed must be 0.125..16 (the = / - keys use the same range)");
 	if (a.rp.view_dist < 200 || a.rp.eye_h < 1 || a.rp.level_h < 8) die("--view-dist must be >= 200, --eye >= 1, --level-h >= 8 (px)");
-	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR] [--selftest-input] [--autotest [--screenshot F.ppm]]");
+	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
 		std::unique_ptr<ModelLibrary> models;
 		if (!a.models.empty()) { models = std::make_unique<ModelLibrary>(a.models); if (!models->ok()) die("--models: no files under that directory"); }
-		Session s; s.models = models.get(); s.open(assets, a);
+		Session s; s.models = models.get(); s.model_mode = a.model_units ? Renderer::kModelsUnits : Renderer::kModelsBuildings; s.open(assets, a);
 		if (a.autotest) return autotest(s, assets, a);
 
 		if (SDL_Init(SDL_INIT_VIDEO) != 0) { std::cerr << "SDL_Init: " << SDL_GetError() << "\n"; return 1; }
@@ -428,6 +431,8 @@ int main(int argc, char** argv) {
 			K(14.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 
+		// --screenshot during the FPS self-test: frames at named steps (defined here: the plan's lambdas run after the block below)
+		auto shot = [&](const char* tag) { if (!a.screenshot.empty()) { std::string f = a.screenshot; size_t dot = f.rfind('.'); f.insert(dot == std::string::npos ? f.size() : dot, tag); save_ppm(f, fb, a.rw, a.rh); } };
 		if (fps_test) { // FPS plan: aim, hold fire, feedback (animation, sound, pain), death and restart, all through real input events
 			speed = 4.0;
 			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
@@ -435,7 +440,7 @@ int main(int argc, char** argv) {
 			K(0.5, "spawn an enemy in front", [&] { unit_t* h = F_().player(); const double PI = 3.14159265358979323846, r = v.cam.heading * PI / 180; unit_t* z = nullptr;
 				for (double d : {100.0, 90.0, 110.0, 80.0}) { if (z) break; z = G().spawn(UnitTypes::Zerg_Zergling, xy{(int)(h->sprite->position.x + std::cos(r) * d), (int)(h->sprite->position.y + std::sin(r) * d)}, G().enemy()); }
 				if (z) zid = G().fn().get_unit_id(z); vm_ok = vm.loaded(); st.check("spawned a Zergling in front of the hero", z != nullptr); });
-			K(1.2, "check crosshair", [&] { unit_t* z = G().fn().get_unit(zid);
+			K(1.2, "check crosshair", [&] { unit_t* z = G().fn().get_unit(zid); shot("_crosshair");
 				st.check("crosshair is green on an enemy in weapon range", ov.crosshair == 0xFF40FF40);
 				st.check("trigger up: the idle hero does not auto-fire", z && F_().shots == 0 && (int)z->hp.integer_part() == (int)z->unit_type->hitpoints.integer_part()); });
 			K(1.3, "LMB down", [&] { push_button(SDL_BUTTON_LEFT); });
@@ -456,11 +461,16 @@ int main(int argc, char** argv) {
 				st.check("firing out of range takes miss shots (" + std::to_string(F_().misses) + ")", F_().misses >= 1);
 				st.check("the far enemy is unhurt (HP " + std::to_string(far_hp0) + " -> " + std::to_string(z ? (int)z->hp.integer_part() : 0) + ")", z && (int)z->hp.integer_part() == far_hp0); });
 			K(5.3, "LMB up (miss)", [&] { push_button_up(SDL_BUTTON_LEFT); });
+			K(5.35, "screenshot", [&] { shot("_fight"); });
 			K(5.4, "overwhelm", [&] { unit_t* h = F_().player(); if (!h) return; for (int i = 0; i < 40; ++i) { unit_t* z = G().spawn(UnitTypes::Zerg_Zergling, xy{h->sprite->position.x + 20 + (i % 8) * 6, h->sprite->position.y + 22 + (i / 8) * 6}, G().enemy()); if (z) G().attack_as(G().enemy(), z, h); } });
 			K(7.0, "check death", [&] { st.check("the hero dies and the game notices", !F_().alive() && dead_seen);
 				if (vm_ok && have_audio) st.check("death played a voice line (" + std::to_string(death_plays) + ")", death_plays == 1); });
 			K(7.1, "restart", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_R, SDLK_r); });
 			K(7.6, "check restart", [&] { st.check("R restarts: a fresh hero at full HP (" + std::to_string(F_().player_hp()) + "/" + std::to_string(F_().player_max_hp()) + ")", F_().alive() && F_().player_hp() == F_().player_max_hp() && !dead_seen && v.follow != nullptr); });
+			static int mode0 = -1;
+			K(8.3, "M", [&] { mode0 = s.r->model_mode(); push_key(SDL_KEYDOWN, SDL_SCANCODE_M, SDLK_m); });
+			K(8.5, "check M", [&] { if (s.models) st.check("M cycles the 3D models (" + std::to_string(mode0) + " -> " + std::to_string(s.r->model_mode()) + ")", s.r->model_mode() == (mode0 + 1) % 3);
+			                         else st.check("M without models says so", cmd.msg.find("No models") != std::string::npos); });
 			K(8.7, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 
@@ -503,6 +513,10 @@ int main(int argc, char** argv) {
 						case SDLK_f: v.follow = nullptr; break;
 						case SDLK_r: s.open(assets, a); pick = Pick{}; v.follow = nullptr; /* the old game's units are gone: drop pointers into it */ v.spawn(*s.r); begin_game_view(); acc = 0; moving = false; firing = false; last_shots = 0; last_hp = -1; dead_seen = false; flash = 0; break;
 						case SDLK_F12: save_ppm(bwgame::format("fp_shot_%03d.ppm", shots++), fb, a.rw, a.rh); break;
+						case SDLK_m: if (s.models) { // cycle sprites only -> 3D buildings -> 3D buildings and units
+							static const char* names[3] = {"Models: off (sprites only)", "Models: buildings and minerals", "Models: buildings and units (experimental, not animated)"};
+							s.model_mode = (s.model_mode + 1) % 3; s.r->set_model_mode(s.model_mode); s.r->update_units(); cmd.say(names[s.model_mode]);
+						} else cmd.say("No models loaded (run with --models DIR)"); break;
 						case SDLK_e: if (s.live()) { // possess the selected unit / release
 							if (v.follow) { v.follow = nullptr; cmd.say("Free camera"); }
 							else if (unit_t* sel = s.game->selected()) { if (cmd.own(sel)) { v.follow = sel; cmd.say("Possessing " + cmd.name(sel)); } else cmd.say("You can only possess your own units"); }
@@ -605,7 +619,7 @@ int main(int argc, char** argv) {
 				}
 				if (cmd.msg_t > 0) hud.text(dst.x + dst.w / 2 - 150, dst.y + dst.h - pad - lh * 4 - sl, cmd.msg, cyan);
 				hud.text(dst.x + dst.w - pad, dst.y + pad, bwgame::format("%.0f fps  x%.3g%s%s", fps, speed, paused ? "  PAUSED" : "", s.done() ? "  END" : ""), grey, true, true);
-				hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : "TAB follow  F free  P pause  =/- speed  R restart", grey, true, true);
+				hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, (std::string(s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : "TAB follow  F free  P pause  =/- speed  R restart") + (s.models ? "  M models" : "")), grey, true, true);
 			}
 			SDL_RenderPresent(ren);
 			if (a.no_vsync) { // soft cap around 240 fps so the uncapped path does not burn the CPU

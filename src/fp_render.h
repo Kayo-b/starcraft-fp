@@ -106,15 +106,26 @@ public:
 			  if (u->unit_type->has_shield && ms > 0) b.shield_frac = std::max(0.0, std::min(1.0, (u->shield_points.raw_value / 256.0) / ms)); }
 			assets_.sprite((int)mi->image_type->id);
 			// Finished buildings and mineral fields with a model: scaled so its footprint covers the unit's (by area)
-			if (models_ && fn_.u_completed(u)) if (const M3Model* m = models_->for_unit(u->unit_type->id)) {
-				auto& b = units_.back(); double mw = std::max(0.1f, m->hi[0] - m->lo[0]), md = std::max(0.1f, m->hi[1] - m->lo[1]);
-				double pw = std::max(16, (int)u->unit_type->placement_size.x), ph = std::max(16, (int)u->unit_type->placement_size.y);
-				b.model = m; b.mscale = std::sqrt(pw * ph / (mw * md)); b.myaw = 0;
+			if (models_ && model_mode_ >= 1 && fn_.u_completed(u)) {
+				auto& b = units_.back();
+				if (const M3Model* m = models_->for_unit(u->unit_type->id)) {
+					double mw = std::max(0.1f, m->hi[0] - m->lo[0]), md = std::max(0.1f, m->hi[1] - m->lo[1]);
+					double pw = std::max(16, (int)u->unit_type->placement_size.x), ph = std::max(16, (int)u->unit_type->placement_size.y);
+					b.model = m; b.mscale = std::sqrt(pw * ph / (mw * md)); b.myaw = 0;
+				} else if (model_mode_ >= 2) if (const M3Model* m = models_->for_mobile(u->unit_type->id)) {
+					// headings run clockwise from north (64 = east); a model faces south at yaw 0
+					b.model = m; b.mscale = kUnitModelScale; b.myaw = fn_.direction_index(u->heading) * (2 * 3.14159265358979323846 / 256) + 3.14159265358979323846;
+				}
 			}
 		}
 	}
 	// 3D models (fp_models.h); without a library every unit is a sprite.
 	void set_models(ModelLibrary* m) { models_ = m; }
+	// What is drawn as a model (switchable while playing; sprites stay for everything else):
+	// 0 sprites only, 1 buildings and minerals, 2 also units with a model (experimental: rest pose, no animation yet).
+	enum ModelMode { kModelsOff = 0, kModelsBuildings = 1, kModelsUnits = 2 };
+	void set_model_mode(int mode) { model_mode_ = std::max(0, std::min(2, mode)); }
+	int model_mode() const { return models_ ? model_mode_ : 0; }
 	// A model placed in the world independently of the simulation (fp_view's model views): not pickable.
 	void add_static_model(const M3Model* m, double x, double y, double px_per_unit, double yaw_deg, int owner) {
 		if (m) statics_.push_back({m, x, y, px_per_unit, yaw_deg * 3.14159265358979323846 / 180.0, owner});
@@ -583,7 +594,7 @@ private:
 	Terrain terrain_; int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_; double avg_[3] = {0, 0, 0};
 	std::vector<UnitView> units_; std::vector<float> zbuf_; // per-pixel depth of the terrain and models (kFar for sky and fog)
 	std::vector<int32_t> idbuf_;                             // per pixel: the units_ index of the model drawn there, -2 static model, -1 none
-	ModelLibrary* models_ = nullptr;
+	ModelLibrary* models_ = nullptr; int model_mode_ = kModelsBuildings;
 	struct StaticModel { const M3Model* m; double x, y, scale, yaw; int owner; };
 	std::vector<StaticModel> statics_;
 	// One screen-space triangle of a model, ready to rasterise: x, y, 1/depth and u/depth, v/depth, light per corner.

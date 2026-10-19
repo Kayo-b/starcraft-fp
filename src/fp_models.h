@@ -63,6 +63,26 @@ inline const char* model_file(bwgame::UnitTypes t) {
 	auto it = files.find(t); return it == files.end() ? nullptr : it->second;
 }
 
+// Units with a textured model in the mod (the SCV's textures are SC2 base-game files, the Drone has no live model).
+// Heroes use their unit's model. Drawn only with --model-units, in the rest pose until animation exists (M3.6).
+inline const char* unit_model_file(bwgame::UnitTypes t) {
+	using bwgame::UnitTypes;
+	static const std::map<UnitTypes, const char*> files = {
+		{UnitTypes::Protoss_Zealot, "Assets/Units/Protoss/ZealotSCBW/ZealotSCBW.m3"},
+		{UnitTypes::Protoss_Dragoon, "Assets/Units/Protoss/DragoonSCBW/DragoonSCBW.m3"},
+		{UnitTypes::Hero_Fenix_Dragoon, "Assets/Units/Protoss/DragoonSCBW/DragoonSCBW.m3"},
+		{UnitTypes::Terran_Marine, "Assets/Units/Terran/MarineSCBW/MarineSCBW.m3"},
+		{UnitTypes::Hero_Jim_Raynor_Marine, "Assets/Units/Terran/MarineSCBW/MarineSCBW.m3"},
+		{UnitTypes::Terran_Firebat, "Assets/Units/Terran/FirebatSCBW/FirebatSCBW.m3"},
+		{UnitTypes::Zerg_Zergling, "Assets/Units/Zerg/ZerglingSCBW/ZerglingSCBW.m3"},
+		{UnitTypes::Zerg_Hydralisk, "Assets/Units/Zerg/HydraliskSCBW_Webby/HydraliskSCBW_Webby.m3"},
+		{UnitTypes::Hero_Hunter_Killer, "Assets/Units/Zerg/HydraliskSCBW_Webby/HydraliskSCBW_Webby.m3"},
+		{UnitTypes::Zerg_Ultralisk, "Assets/Units/Zerg/UltraliskSCBW/UltraliskSCBW.m3"},
+	};
+	auto it = files.find(t); return it == files.end() ? nullptr : it->second;
+}
+constexpr double kUnitModelScale = 22; // px per model unit: a Zealot model stands about as tall as its HD sprite
+
 class ModelLibrary {
 public:
 	explicit ModelLibrary(const std::string& root) : assets_(root) {}
@@ -78,6 +98,7 @@ public:
 		return it->second.get();
 	}
 	const M3Model* for_unit(bwgame::UnitTypes t) { const char* f = model_file(t); return f ? load(f) : nullptr; }
+	const M3Model* for_mobile(bwgame::UnitTypes t) { const char* f = unit_model_file(t); return f ? load(f) : nullptr; }
 private:
 	AssetIndex assets_; std::map<std::string, std::unique_ptr<M3Model>> cache_;
 };

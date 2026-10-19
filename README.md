@@ -47,7 +47,7 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
   move orders), T train worker, Y train combat unit, B build supply at the crosshair (Terran/Protoss workers only), X stop.
 
 ### Common controls and options
-- Mouse look; WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; P pause; `=`/`-` sim speed
+- Mouse look; WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; M cycle 3D models; P pause; `=`/`-` sim speed
   (x0.125..x16); R restart; ESC release/capture the mouse; F12 screenshot (`fp_shot_NNN.ppm` in the working directory); Q quit.
 - `--race R` / `--enemy R` (terran, protoss, zerg; default terran vs protoss), `--res WxH` render resolution (default 640x400),
   `--window WxH` (default 1280x800), `--fullscreen`, `--sim-speed X` starting sim speed (0.125..16), `--no-capture` leaves your
@@ -98,8 +98,10 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   models from a local copy of the SC Evo Complete mod (its `SCEvo_Assets.SC2Mod/Base.SC2Assets` directory; `run.sh` adds it from
   `MODELS_DIR` when it exists, `NO_MODELS=1` turns it off). The models are kitbashes of Blizzard's SC2 art: local use only, never
   committed. A software rasteriser draws them into the same per-pixel depth buffer (rest pose, diffuse + emissive textures, team colour
-  from the diffuse alpha); units and buildings without a model stay sprites. `fp_view --models DIR --model FILE --model-at X,Y,YAW`
-  places any model in a view.
+  from the diffuse alpha); units and buildings without a model stay sprites. M cycles what is 3D while playing: sprites only,
+  buildings and minerals (the default), buildings and units (experimental: Zealot, Dragoon, Marine, Firebat, Zergling, Hydralisk,
+  Ultralisk and the FPS heroes in their rest pose, not animated yet; `--model-units` starts there).
+  `fp_view --models DIR --model FILE --model-at X,Y,YAW` places any model in a view.
 - Terrain: a heightfield of minitiles (8 px, `src/fp_terrain.h`). Walkable cells sit at their StarCraft level (low/mid/high, 112 px apart);
   floors are one continuous surface (heights at cell corners), so ramps are smooth slopes. StarCraft paints a cliff's face onto the
   map as the band between its foot and its top: on natural tilesets that band becomes a slope from foot to top with the map art draped
