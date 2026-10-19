@@ -42,9 +42,9 @@ struct Pick {
 };
 
 // eye_h: eye above the floor under the camera; view_dist: how far rays go before the fog has closed in; level_h: height of
-// one terrain level (all px). StarCraft draws one level's cliff face ~40-64 px tall onto the map (the south-facing cliff
-// band is that much deeper than the north-facing one), so a level is 64 px rather than the tile size.
-struct RenderParams { double fov = 66, eye_h = 12, view_dist = 3000, level_h = 64; };
+// one terrain level (all px). StarCraft paints one level's cliff face 64-96 px deep onto the map, and Titan Reactor's
+// terrain puts mid ground ~80 px and high ground ~128 px above low ground, so a level is 112 px, not the tile size.
+struct RenderParams { double fov = 66, eye_h = 12, view_dist = 3000, level_h = 112; };
 
 // Default StarCraft player colours (red, blue, teal, purple, orange, brown, white, yellow); neutral/others grey.
 static inline void player_rgb(int owner, double out[3]) {
@@ -249,8 +249,9 @@ private:
 			}
 			if (r0 < r1) top = r0;
 		};
-		// A face rising h0 -> h1 at distance d; (nx, ny) is its outward normal (toward the camera).
-		auto face = [&](double h0, double h1, double d, double nx, double ny) {
+		// A face rising h0 -> h1 at distance d; (nx, ny) is its outward normal (toward the camera). band_px > 0: a cliff
+		// block's face, whose art is its band: read inward from the foot (bottom) to the band's far side (top).
+		auto face = [&](double h0, double h1, double d, double nx, double ny, double band_px) {
 			double rt = row_at(d, h1), rb = row_at(d, h0);
 			int r0 = std::max(0, first_row(rt)), r1 = std::min(top, first_row(rb));
 			if (r0 >= r1) return;
@@ -258,12 +259,12 @@ private:
 			double snx, sny; iso_snap(nx, ny, snx, sny);
 			for (int sy = r0; sy < r1; ++sy) {
 				double hp = h0 + (h1 - h0) * (rb - (sy + 0.5)) / std::max(1e-6, rb - rt); // terrain height at this pixel
-				// Stand-in until M3 maps the cliff band: the face's art is the solid side's art read inward, deeper for
-				// higher points (StarCraft draws a cliff's face onto the ground beside its foot). Inward is the face normal
-				// snapped to the isometric directions, so every cell along a straight wall reads the art the same way.
-				double into = (hp - h0) + 0.5;
+				// StarCraft paints a face onto the ground beside its foot: the art is read inward (along the face normal
+				// snapped to the isometric directions, so every cell along a straight wall reads it the same way), across the
+				// whole band for a cliff, one art px per height px for other blocks.
+				double f = (hp - h0) / std::max(1e-6, h1 - h0), into = (band_px > 0 ? f * band_px : hp - h0) + 0.5;
 				uint8_t t[3]; world_sample(hx - snx * into, hy - sny * into, t);
-				double k = (0.62 + 0.38 * (hp - h0) / std::max(1e-6, h1 - h0)) * light * (outside_px(hx, hy) ? kOutside : 1.0); // darker at the foot
+				double k = (0.62 + 0.38 * f) * light * (outside_px(hx, hy) ? kOutside : 1.0); // darker at the foot
 				put(sy, d, t[0] * k, t[1] * k, t[2] * k);
 			}
 			top = r0;
@@ -278,6 +279,11 @@ private:
 			double ua = gx + rdx * ta - cx, va = gy + rdy * ta - cy, ub = gx + rdx * tb - cx, vb = gy + rdy * tb - cy;
 			const Terrain::Split* sp = terrain_.split(cx, cy);
 			int sa = sp ? (sp->nx * ua + sp->ny * va > sp->c) : -1, sb = sp ? (sp->nx * ub + sp->ny * vb > sp->c) : -1;
+			if (!sp) { // unsplit sloped surface: its resolved corners
+				double h0 = terrain_.corner_at(cx, cy, ua, va), h1 = terrain_.corner_at(cx, cy, ub, vb);
+				surface(h0, h1, ta * kCell, tb * kCell);
+				return h1;
+			}
 			if (sa == sb) {
 				double h0 = terrain_.side_value(cx, cy, ua, va, sa).h, h1 = terrain_.side_value(cx, cy, ub, vb, sa).h;
 				surface(h0, h1, ta * kCell, tb * kCell);
@@ -288,7 +294,7 @@ private:
 			double a0 = terrain_.side_value(cx, cy, ua, va, sa).h, a1 = terrain_.side_value(cx, cy, uh, vh, sa).h;
 			double b0 = terrain_.side_value(cx, cy, uh, vh, sb).h, b1 = terrain_.side_value(cx, cy, ub, vb, sb).h;
 			surface(a0, a1, ta * kCell, th * kCell);
-			if (b0 > a1) { double s = sa == 1 ? 1 : -1; face(a1, b0, th * kCell, s * sp->nx, s * sp->ny); } // normal toward the side we came from
+			if (b0 > a1) { double s = sa == 1 ? 1 : -1; face(a1, b0, th * kCell, s * sp->nx, s * sp->ny, sp->kind[sb] == Terrain::cliff ? sp->band * kCell : 0); } // normal toward the side we came from
 			surface(b0, b1, th * kCell, tb * kCell);
 			return b1;
 		};
@@ -303,7 +309,7 @@ private:
 			if (out && ++out_steps > kMirrorCells) { left = true; t_in = t_out; break; } // the plane below takes over
 			const Terrain::Cell& nc = out ? mirrored(mx, my) : terrain_.at(mx, my);
 			double h_entry = (out || (nc.flags & Terrain::flat)) ? nc.h : terrain_.side_at(mx, my, gx + rdx * t_out - mx, gy + rdy * t_out - my).h;
-			if (h_entry > h_exit) face(h_exit, h_entry, t_out * kCell, pmx - mx, pmy - my);
+			if (h_entry > h_exit) face(h_exit, h_entry, t_out * kCell, pmx - mx, pmy - my, nc.kind == Terrain::cliff && !out ? nc.band * kCell : 0);
 			t_in = t_out;
 		}
 		// Past the mirrored strip: a plain ground plane at the last height, in the map's average colour, fogged.
