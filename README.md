@@ -16,8 +16,9 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
     ./run.sh --game MAP               # live RTS-style sandbox: possess a unit, give orders
     ./run.sh --replay FILE            # another replay;  --map FILE loads a map with neutral units only
 
-`run.sh` builds `fp_play` when needed, passes `--data`, and for `--fps` without `--game` adds `--game "$GAME_MAP"` and
-`--weapons "$WEAPONS_DIR"` (when that directory exists; without it there is no gun art or sound). Extra arguments are passed through.
+`run.sh` builds `fp_play` when needed and passes `--data`. A `--game`/`--map` value that is not a file is looked up in your StarCraft
+maps folder (`MAPS_DIR`), so `./run.sh --game "(2)The Small Divide"` works. `--fps` without `--game` plays `GAME_MAP`, and every `--fps`
+run gets `--weapons "$WEAPONS_DIR"` when that directory exists (without it there is no gun art or sound). Extra arguments are passed through.
 
 ### FPS (`--game MAP --fps`)
 You are Jim Raynor's Marine (`--race protoss`: Fenix's Dragoon, `--race zerg`: Hunter-Killer). Waves of the enemy race (`--enemy`,
