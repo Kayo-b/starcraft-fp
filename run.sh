@@ -14,7 +14,8 @@
 # Overrides: DATA_DIR (extracted CASC files), OPENBW_DIR (OpenBW headers), REPLAY (default replay), GAME_MAP (map for --fps),
 # MAPS_DIR (where map names are looked up), WEAPONS_DIR (unpacked "Boltgun Doom" mod directory, added to every --fps run
 # when it exists; local third-party assets, see README).
-# RUN_SH_DRY=1 prints the fp_play command instead of running it.
+# MODELS_DIR: SC Evo Complete's SCEvo_Assets.SC2Mod/Base.SC2Assets (3D buildings and minerals; local SC2 mod assets, never
+# committed), added when it exists unless NO_MODELS=1. RUN_SH_DRY=1 prints the fp_play command instead of running it.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
@@ -24,6 +25,7 @@ REPLAY="${REPLAY:-../starcraft-data/titan-reactor/bundled/demo.rep}"
 MAPS_DIR="${MAPS_DIR:-$HOME/Games/battlenet/drive_c/Program Files (x86)/StarCraft/Maps}"
 GAME_MAP="${GAME_MAP:-$MAPS_DIR/(2)Bottleneck.scm}"
 WEAPONS_DIR="${WEAPONS_DIR:-$HOME/Downloads/W40K_Boltgun_Doom_a0.9.1/W40K_Boltgun_Doom_a0.9.1}"
+MODELS_DIR="${MODELS_DIR:-../starcraft-data/SCEvoComplete/SC Evo Complete/SCEvo_Assets.SC2Mod/Base.SC2Assets}"
 export OPENBW_DIR
 
 [ -d "$DATA_DIR" ]    || { echo "run.sh: DATA_DIR not found: $DATA_DIR (extract with tools/casc_get.cjs; see README)" >&2; exit 1; }
@@ -54,6 +56,9 @@ if [ "$fps" = 1 ] && [ "$has_input" = 0 ]; then
 	[ -f "$GAME_MAP" ] || { echo "run.sh: map not found: $GAME_MAP (set GAME_MAP)" >&2; exit 1; }
 	set -- --game "$GAME_MAP" "$@"; has_input=1
 fi
+# 3D models for buildings and minerals when the SC Evo Complete assets are there (NO_MODELS=1 keeps sprites).
+has_models=0; for a in "$@"; do [ "$a" = --models ] && has_models=1; done
+if [ "$has_models" = 0 ] && [ -z "${NO_MODELS:-}" ] && [ -d "$MODELS_DIR" ]; then set -- "$@" --models "$MODELS_DIR"; fi
 if [ "$fps" = 1 ] && [ "$has_weapons" = 0 ]; then
 	if [ -d "$WEAPONS_DIR" ]; then set -- "$@" --weapons "$WEAPONS_DIR"; else echo "run.sh: WEAPONS_DIR not found; playing without gun art/sounds" >&2; fi
 fi

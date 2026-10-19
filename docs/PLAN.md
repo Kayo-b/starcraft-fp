@@ -9,7 +9,10 @@ Base: this repo (`main`), OpenBW headers in `../starcraft-data/openbw`, extracte
 2. OpenBW is the authority for simulation, orders and combat. Only exception: the hero's position in free movement.
 3. The world is a minitile heightfield (8 px cells). Floor heights come from the per-minitile vf4 flags; every
    unwalkable cell is a solid block with a height (cliff: the upper level; doodad: its art height; void: no floor).
-4. Textures come only from the map's own HD art. No external 3D assets. Sprites stay 2D billboards of the HD anim art.
+4. Terrain textures come only from the map's own HD art. Units are 2D billboards of the HD anim art, except where a
+   3D model exists: SC2 `.m3` models of the Brood War roster from a local copy of the SC Evo Complete mod (MIT for the
+   mod's own work; the models are kitbashes of Blizzard art: local use only, never committed). Buildings and mineral
+   fields first (revised 2026-10-19: billboards of them fit a first-person view worst).
 5. Free movement is the `--fps` default; `--fps-order-move` keeps the order-driven mode; `--fps-move-shoot` stays
    accepted as an alias.
 6. Commander mode (FPS + simplified RTS) is a new mode, `--commander`, planned in detail once phases 1-2 are accepted.
@@ -58,6 +61,18 @@ Status: `todo`, `doing`, `done`.
   Play-check follow-up: obstacles on natural tilesets are draped mounds too (rising to full height 3 cells in from
   their edge, smoothed over neighbouring obstacle cells, never below the floor beside them); the jungle canopy's
   unwalkable rim was a flat 32 px wall.
+- **M3.5** `done` 3D models for buildings and minerals (`src/fp_m3.h`, `src/fp_models.h`, `--models DIR`). An `.m3`
+  (MD34) reader (layouts from m3addon's structures.xml): rest-pose mesh, opaque standard materials (composites by
+  their first opaque section), diffuse and emissive DDS textures (DXT1/3/5, ARGB). A software rasteriser draws them
+  into the per-pixel depth buffer (perspective-correct, scanline spans, back faces culled, near-plane clipping, light
+  from the south-west, team colour from the diffuse alpha, same fog as the terrain), with a per-pixel unit id for
+  picking. 44 building and mineral types; Lair, Hive, Starport, Physics Lab, Armory, Hydralisk Den, Spire, Greater
+  Spire, Ultralisk Cavern, Nydus Canal and the Vespene Geyser have no model in the mod and stay sprites; unfinished
+  buildings stay sprites. Scaled so the model's footprint covers the unit's (by area). Zealot spike: renders
+  correctly at ~22 px per model unit (`fp_view --model ... --model-at X,Y,YAW --model-scale 22`). Demo base view
+  5.1-5.7 ms with models (4.9 with sprites). Found and fixed: a model under the crosshair beat a sprite in front of it.
+- **M3.6** `todo` Animated unit models: bones and sequences (Stand/Walk/Attack/Death) driven by OpenBW state, heading,
+  per-unit scale, death models; sprites for units without a model. Decide after a play check of M3.5.
 - **M4** `todo` All sprites as the original draws them: `sprites_on_tile_line` (units, bullets, explosions, deaths,
   doodad sprites), every image of a sprite, shadows as floor decals; flyers at altitude; smoothing and a size clamp up
   close (also the sprite fill cost: front-to-back without overdraw); buildings anchored on their footprint.
@@ -97,7 +112,9 @@ Status: `todo`, `doing`, `done`.
 - Doodads are baked into the terrain art; some have no clean footprint and need per-tileset handling.
 - Water, lava and the space platform's void need tileset-specific classification (cv5 groups are not documented here
   yet; M1 starts with a survey).
-- Large buildings are flat billboards; up close they may still read poorly after the size clamp.
+- Buildings without a model (see M3.5) are flat billboards; up close they may still read poorly after the size clamp.
+- Model materials beyond diffuse and emissive (normal, specular, decals, additive glows) are not drawn; some SC2
+  base-game textures the mod's models reference are not in the mod.
 - The stock maps cover four tilesets (badlands, platform, AshWorld, Jungle). Installation, Desert, Ice and Twilight need
   campaign or Brood War maps for M6.
 - OpenBW's licence is unresolved: fine for local play, blocks distribution.

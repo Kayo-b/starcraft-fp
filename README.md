@@ -94,6 +94,12 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
     python3 tools/ppm2png.py out/fp.ppm out/fp.png
 
 ## Rendering model (prototype choices, not StarCraft facts)
+- 3D models (`--models DIR`, `src/fp_m3.h`, `src/fp_models.h`): finished buildings and mineral fields are drawn as StarCraft II `.m3`
+  models from a local copy of the SC Evo Complete mod (its `SCEvo_Assets.SC2Mod/Base.SC2Assets` directory; `run.sh` adds it from
+  `MODELS_DIR` when it exists, `NO_MODELS=1` turns it off). The models are kitbashes of Blizzard's SC2 art: local use only, never
+  committed. A software rasteriser draws them into the same per-pixel depth buffer (rest pose, diffuse + emissive textures, team colour
+  from the diffuse alpha); units and buildings without a model stay sprites. `fp_view --models DIR --model FILE --model-at X,Y,YAW`
+  places any model in a view.
 - Terrain: a heightfield of minitiles (8 px, `src/fp_terrain.h`). Walkable cells sit at their StarCraft level (low/mid/high, 112 px apart);
   floors are one continuous surface (heights at cell corners), so ramps are smooth slopes. StarCraft paints a cliff's face onto the
   map as the band between its foot and its top: on natural tilesets that band becomes a slope from foot to top with the map art draped
@@ -135,3 +141,4 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
 - Walkability and height levels are read once per map load; creep-induced changes during play are not tracked.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).
 - Only the main image of each sprite is drawn (no shadows/overlays).
+- Models are drawn in their rest pose (no animation yet); additive glows, decals and normal maps are skipped.
