@@ -25,9 +25,13 @@ Status: `todo`, `doing`, `done`.
   harness (`tools/golden.sh`, `fp_view --print-tileset`).
 
 ### Phase 1 — the map in pseudo-3D (`fp-terrain-*`)
-- **M1** `todo` Terrain model (`src/fp_terrain.h`): cell kind (floor, ramp, cliff, obstacle, water, void, edge),
-  height, art source; ramps as slopes; doodad groups from the raw `.cv5`; `fp_view --heightmap`; `fp_terraintest`
-  (walkability = OpenBW `is_walkable`, levels = OpenBW ground height, cliffs border two levels, deterministic).
+- **M1** `done` Terrain model (`src/fp_terrain.h`): cell kind (floor, cliff, obstacle, water, space, edge), level,
+  height, cv5 type, flags (ramp, doodad, very high); ramps blend two levels over 4 cells each side; `fp_view
+  --heightmap`; `fp_terraintest` (walkability = OpenBW `is_walkable`, levels = `get_ground_height_at`, cliffs never
+  below the floor they border, no solid block sinks, no unramped jumps, deterministic). Survey (`tools/terrain_survey`):
+  south-facing cliff bands are 4-16 minitiles deep, north-facing 2-5; cv5 type 1 = doodad on every tileset, 5 = water
+  on Badlands and Jungle, 2 = the space platform's void. The renderer's grid now comes from the model (per-minitile
+  levels, three of them). Faces' art sources move to M3, which needs them.
 - **M2** `todo` Heightfield raycaster: front-to-back cells with a per-column clip row, faces and tops at any height,
   rays continue past cliffs to `--view-dist`; per-pixel depth buffer for sprites and picking; distance fog; eye and
   unit grounding from the heightfield. Budget: 4 ms at 640x400.

@@ -7,7 +7,7 @@
 using namespace fp;
 
 struct Args {
-	std::string data, input, out = "out/fp.ppm", topdown;
+	std::string data, input, out = "out/fp.ppm", topdown, heightmap;
 	int frames = 0, unit = -1, spot = -1, w = 640, h = 400; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false, print_tileset = false;
 };
 static void die(const char* m) { std::cerr << m << "\n"; std::exit(2); }
@@ -30,9 +30,10 @@ int main(int argc, char** argv) {
 		else if (k == "--size") sscanf(next(), "%dx%d", &a.w, &a.h);
 		else if (k == "--print-tileset") a.print_tileset = true;
 		else if (k == "--spot") a.spot = atoi(next());
+		else if (k == "--heightmap") a.heightmap = next();
 		else die("unknown option");
 	}
-	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm] [--print-tileset]");
+	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm] [--heightmap F.ppm] [--print-tileset]");
 	try {
 		replay_player player;
 		player.init(dir_loader(a.data));
@@ -83,6 +84,23 @@ int main(int argc, char** argv) {
 		};
 		write(a.out, fb, a.w, a.h);
 		std::cout << "wrote " << a.out << "\n";
+		if (!a.heightmap.empty()) { // debug: the terrain model, one pixel per minitile (fp_terrain.h)
+			const Terrain& t = r.terrain(); std::vector<uint32_t> hm((size_t)t.w * t.h);
+			for (int y = 0; y < t.h; ++y) for (int x = 0; x < t.w; ++x) {
+				const Terrain::Cell& c = t.at(x, y); double v = std::max(0.0, std::min(1.0, c.h / (3 * t.level_h))); int R = 0, G = 0, B = 0;
+				switch (c.kind) {
+					case Terrain::floor: G = (int)(70 + 170 * v); R = (c.flags & Terrain::ramp) ? 200 : 30; B = 30; break; // green by height; ramps yellow
+					case Terrain::cliff: R = (int)(120 + 130 * v); G = 60; B = 30; break;                                 // brown-red by top level
+					case Terrain::obstacle: R = G = B = (int)(70 + 150 * v); if (c.flags & Terrain::doodad) B = 255; break; // grey; doodads blue-grey
+					case Terrain::water: R = 30; G = 60; B = 200; break;
+					case Terrain::space: break;
+					default: R = 255; B = 255;
+				}
+				hm[(size_t)y * t.w + x] = 0xFF000000u | (R << 16) | (G << 8) | B;
+			}
+			write(a.heightmap, hm, t.w, t.h);
+			std::cout << "wrote " << a.heightmap << "\n";
+		}
 		if (!a.topdown.empty()) { // debug: 4 px per minitile, 128x128 minitile window around the camera, with the view cone
 			const int R = 64, S = 4, N = 2 * R * S; std::vector<uint32_t> td((size_t)N * N);
 			int cx0 = (int)(cam.x / 8) - R, cy0 = (int)(cam.y / 8) - R;
