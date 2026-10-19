@@ -80,7 +80,9 @@ int main(int argc, char** argv) {
 		  check(f2.range(f2.player()) >= 300, "hero range: the weapon reaches at least 300 px (" + std::to_string((int)f2.range(f2.player())) + " px)");
 		  check(killed_at >= 0 || hp_after < hp0, "shooting damages the target (HP " + std::to_string(hp0) + " -> " + (killed_at >= 0 ? std::string("dead after ") + std::to_string(killed_at) + " frames" : std::to_string(hp_after)) + ")");
 		  check(f2.shots >= 1, "shots are counted from the weapon cooldown (" + std::to_string(f2.shots) + " shots fired in the duel)");
-		  check(killed_at >= 0 && f2.alive(), "the hero wins the duel and survives (HP " + std::to_string(f2.alive() ? (int)f2.player()->hp.integer_part() : 0) + ")"); }
+		  check(killed_at >= 0 && f2.alive(), "the hero wins the duel and survives (HP " + std::to_string(f2.alive() ? (int)f2.player()->hp.integer_part() : 0) + ")");
+		  // The game keeps last frame's crosshair pick across a simulation step: a pointer to the dead Zergling must be safe and no target.
+		  check(killed_at >= 0 && !f2.is_enemy(z) && !f2.in_range(z) && f2.fire(z) == Fps::ShotResult::none, "a dead enemy's stale pointer is no target (is_enemy, in_range, fire)"); }
 		// Direct-control mode: velocity movement in any direction, walk-and-shoot, goal steering, position ownership.
 		{ Game m; m.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f3(m, 7, 200, 200, 90, true); f3.start(); unit_t* p = f3.player();
 		  // speed scaling: the hero's flingy top speed is 150% of the stock value

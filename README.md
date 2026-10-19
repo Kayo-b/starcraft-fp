@@ -10,26 +10,47 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
 - OpenBW and Titan Reactor licences are **unverified**; no code from either is copied here.
 
 ## Modes (`fp_play`)
-    ./run.sh                 # watch a replay from inside the world
-    ./run.sh --fps           # FPS: you are a hero unit; waves of enemies hunt you (needs --weapons MOD_DIR for the gun/sounds)
-    ./run.sh --game MAP      # live RTS-style sandbox: possess a unit, give orders (kept; see below)
-- **FPS** (`--game MAP --fps [--weapons MOD_DIR]`): you are Jim Raynor's Marine (Protoss: Fenix's Dragoon, Zerg: Hunter-Killer).
-  WASD is direct velocity-based movement (acceleration, friction, wall slide; no move orders, so you can walk and shoot at once),
-  mouse aims, hold LMB fires at the enemy under the crosshair
-  (fire rate and range are 200% of the StarCraft data by default; tune with `--fire-rate N` / `--range N`, in percent, 10..1000.
-  The crosshair is green when the aimed enemy is in weapon range and red when out of range; firing out of range still shoots and always misses
-  (with a bullet-impact sound from the mod)
-  (small aim assist; no shooting through cliffs), RMB moves to the crosshair floor point, R restarts. The hero only fires while the trigger
-  is held (StarCraft units normally auto-attack). Enemies: waves of the opposing race (melee first, ranged attackers join from wave 2,
-  spawns kept apart), simple chase AI of our own (OpenBW has no AI). Sprites anchor at the box centre like the original renderer, so units sit on the ground.
-  HUD: HP, wave, kills, hover info; crosshair green = in weapon range, red = out of range. `--speed N` scales movement speed
-  (default 90%, order-driven walking reads the hero's runtime speed). `--no-vsync` turns off the 60 Hz vsync cap (soft-capped at 240 fps; the software renderer runs at ~1-2 ms/frame).
-  `--fps-move-shoot` switches to direct movement:
-  velocity physics in any direction, walk and shoot at the same time, RMB = auto-walk goal; the hero then never takes orders
-  (damage goes through OpenBW's hit resolution directly). Experimental — the order-driven mode is the default. Damage/shots/range are OpenBW's.
-- **Replay** (`--replay FILE`): watch from inside the world. **Game sandbox** (`--game MAP`): LMB select, RMB smart order, E possess,
-  T/Y train, B build supply, X stop (Terran/Protoss workers only for building).
-- Common: mouse look, F free camera, TAB next unit, P pause, `=`/`-` sim speed, ESC release mouse, F12 screenshot, Q quit. `--no-capture` leaves your pointer alone.
+    ./run.sh                          # watch the bundled demo replay from inside the world (starts at frame 6000)
+    ./run.sh --fps                    # FPS wave mode on GAME_MAP, order-driven movement (the default)
+    ./run.sh --fps --fps-move-shoot   # FPS wave mode with free FPS-style movement: walk and shoot at the same time
+    ./run.sh --game MAP               # live RTS-style sandbox: possess a unit, give orders
+    ./run.sh --replay FILE            # another replay;  --map FILE loads a map with neutral units only
+
+`run.sh` builds `fp_play` when needed, passes `--data`, and for `--fps` without `--game` adds `--game "$GAME_MAP"` and
+`--weapons "$WEAPONS_DIR"` (when that directory exists; without it there is no gun art or sound). Extra arguments are passed through.
+
+### FPS (`--game MAP --fps`)
+You are Jim Raynor's Marine (`--race protoss`: Fenix's Dragoon, `--race zerg`: Hunter-Killer). Waves of the enemy race (`--enemy`,
+default protoss) hunt you. The camera is locked to the hero, so F and TAB do nothing here.
+- **Movement, order-driven (default)**: WASD issues short StarCraft move orders in the direction you face (pathing and collision are
+  OpenBW's); RMB is a smart order at the crosshair (move to the floor point, or attack the unit). Shots are attack orders, so the hero
+  stands still while firing at a target in range: a StarCraft unit cannot move and shoot at once.
+- **Movement, free (`--fps-move-shoot`, experimental)**: WASD drives the hero directly with velocity physics (acceleration, friction,
+  wall slide) in any direction, with no orders, so you can walk and shoot at the same time. RMB sets an auto-walk goal at the crosshair
+  floor point (any WASD input cancels it). Damage goes straight through OpenBW's weapon-hit resolution. Top speed is fixed at 192 px/s.
+- **Shooting**: mouse aims, hold LMB to fire at the enemy under the crosshair (small aim assist; no shooting through walls). The hero
+  only fires while the trigger is held (StarCraft units normally auto-attack). Crosshair: green = enemy in weapon range, red = enemy
+  out of range; firing out of range still shoots and always misses (with a bullet-impact sound from the mod).
+- **Enemies**: melee units first (Zealots vs Protoss, Firebats vs Terran, Zerglings vs Zerg; 2 per wave, growing to 6), ranged ones
+  (Dragoons, Marines, Hydralisks) join from wave 3 (up to 3). A wave spawns 420-760 px away, reachable and spread out, once the previous
+  one is cleared and at least 8 s have passed. The AI is our own and simple (OpenBW has none): every enemy keeps attacking the hero.
+- **HUD**: wave, kills and enemies alive; HP bar; name/owner/HP of the unit under the crosshair; red flash when hit. R restarts (also
+  after "YOU DIED").
+- **Tuning** (percent of the StarCraft data, 10..1000): `--fire-rate N` and `--range N` (default 200 each), `--speed N` (movement
+  speed, default 90; order-driven mode only).
+
+### Replay and game sandbox
+- **Replay** (`--replay FILE [--start-frame N]`): watch from inside the world; no orders.
+- **Game sandbox** (`--game MAP`): you are one player, a second base sits idle (OpenBW has no AI). You start possessing a worker.
+  LMB select (Shift adds), RMB smart order (move/attack/gather/rally), E possess/release the selected unit (WASD then drives it with
+  move orders), T train worker, Y train combat unit, B build supply at the crosshair (Terran/Protoss workers only), X stop.
+
+### Common controls and options
+- Mouse look; WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; P pause; `=`/`-` sim speed
+  (x0.125..x16); R restart; ESC release/capture the mouse; F12 screenshot (`fp_shot_NNN.ppm` in the working directory); Q quit.
+- `--race R` / `--enemy R` (terran, protoss, zerg; default terran vs protoss), `--res WxH` render resolution (default 640x400),
+  `--window WxH` (default 1280x800), `--fullscreen`, `--sim-speed X` starting sim speed (0.125..16), `--no-capture` leaves your
+  pointer alone, `--no-vsync` turns off the 60 Hz vsync cap (soft-capped at 240 fps; the software renderer runs at ~1-3 ms/frame).
 
 ## External assets and licences (nothing below is in this repo)
 - **StarCraft data**: extracted by you from your own install (`tools/casc_get.cjs`; `bw-casclib` has a buffer-size bug, see the script header).
@@ -44,16 +65,23 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
 `fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
 Window tests (they open a window briefly): `fp_play ... --selftest-input` for replay, `--game MAP` and `--game MAP --fps --weapons MOD_DIR`
 (use `SDL_AUDIODRIVER=dummy` to stay silent); `--autotest` checks collision against OpenBW `is_walkable`.
+Golden views: `tools/golden.sh LABEL` renders fixed first-person views (`fp_view --spot K`: start locations, map centre,
+quarter points; four headings) of one stock map per tileset plus the demo replay into `out/golden/LABEL/*.png` contact sheets,
+to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset.
 
 ## Roadmap / possible goals
+The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLAN.md). Ideas beyond it:
 - **Hero + squad mode** (idea, not started): play as one hero unit in first person while commanding other units (move, attack-move, hold position,
   follow) and fighting alongside them. Looks achievable: possession, crosshair picking and OpenBW's order API (`action_order`, `action_hold_position`,
   `action_stop`) already exist here. Needs: a squad concept (OpenBW selects at most 12 units per order, so group in 12s), an order wheel or hotkeys that
   target the crosshair ("attack here", "move here", "hold", "follow me"), squad unit AI so they do not stand idle, and a minimap/ally markers in the HUD.
 - Weapons beyond the Boltgun (shotgun, heavy bolter, ...: art is in the mod), distinct damage/cooldown per weapon (needs a mod-side weapon layer
   because StarCraft's weapon stats are per unit type), more enemy types and waves, pickups.
-- Known design risks: movement is order-driven so it is not twitchy like Doom; a lone unit cannot move and shoot at once in StarCraft; the art is
-  isometric so billboards look viewed from above; terrain has no height.
+- Shadows and the other sprite layers (overlays); rendering the upper cliff tiers.
+- Fidelity test against a Remastered-recorded replay with a known outcome.
+- Known design risks: the default order-driven movement is not twitchy like Doom and cannot move and shoot at once (`--fps-move-shoot`
+  fixes both by bypassing StarCraft movement for the hero, which then ignores unit collision); the art is isometric so billboards look
+  viewed from above; only one cliff step is drawn, so tall height differences look flat.
 
 ## Build / run (still frames)
     make                                  # needs OpenBW headers: OPENBW_DIR=../starcraft-data/openbw
@@ -61,8 +89,11 @@ Window tests (they open a window briefly): `fp_play ... --selftest-input` for re
     python3 tools/ppm2png.py out/fp.ppm out/fp.png
 
 ## Rendering model (prototype choices, not StarCraft facts)
-Unwalkable minitiles (8 px) are walls (48 px high); floor shade follows tile height flags; units are flat
-billboards sized from unit-type dimensions; eye height 12 px; FOV 66 degrees.
+Unwalkable minitiles (8 px) are walls. Walkable minitiles are floors at one of the four StarCraft height levels (low/middle/high/very
+high, from the tile height flags), 32 px apart; walkable level changes render as step faces. Eye height is 12 px above the floor under
+the camera; FOV 66 degrees; floors and walls darken with distance. Units are flat billboards of their HD sprite frame, grounded on the
+level they stand on and anchored at the box centre like the original renderer. Works with any map OpenBW can load (all eight
+tilesets via their HD DDS data).
 
 ## HD formats (verified on real 1.23.10.13515 files, 2026-10-17)
 - `TileSet/<name>.dds.vr4`: u16 frame count @4 (= number of megatiles, same index space as `.vf4`/`.vx4ex`, 7,038 for Jungle);
@@ -80,23 +111,12 @@ billboards sized from unit-type dimensions; eye height 12 px; FOV 66 degrees.
 - Live window: 60-79 fps with vsync, letterboxed; scripted input passes. Real human keyboard/mouse feel (sensitivity, pointer
   capture and ESC toggle, speed keys) has NOT been exercised by a person.
 
-## Terrain rendering
-- Floors follow the four StarCraft height levels (low/middle/high/very high) as real steps: the eye height, unit grounding and
-  floor casting are level-aware, and walkable level transitions render as step faces. Cliff faces and platform edges sample the
-  boundary strip of the adjacent solid tile's art instead of a stretched tile, so walls look like the map's own terrain.
-  Works with any map OpenBW can load (all eight tilesets via their HD DDS data).
-
 ## Known limits
-- The free camera collides with terrain only (not units/buildings/resources); the possessed/FPS unit collides like any StarCraft unit.
+- The free camera and the `--fps-move-shoot` hero collide with terrain only (not units/buildings/resources); a possessed unit and the
+  order-driven FPS hero collide like any StarCraft unit.
 - Walls show one 32-px step from below (upper cliff tiers are not rendered); creep effects and water animation are not drawn.
 - Wall faces use the classic SD terrain art (vr4 + palette): the bottom half of the boundary minitile's image. That is the original
   game's own face art, at classic resolution; floors stay HD. Where the SD art is blank (space/void), a shaded rock fallback is used.
+- Walkability and height levels are read once per map load; creep-induced changes during play are not tracked.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).
 - Only the main image of each sprite is drawn (no shadows/overlays).
-- Wall faces are one stretched texture row; map-edge walls clamp to the border tile. Flat floor; height levels not used for eye height.
-- Fixed camera, still images only; no input.
-
-## Next
-1. Shadows and other sprite layers, unit animation frames, cliff/height rendering.
-2. Interactive loop (SDL2) and player input through OpenBW actions.
-3. Fidelity test against a Remastered-recorded replay.

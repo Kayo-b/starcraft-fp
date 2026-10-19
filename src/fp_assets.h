@@ -161,22 +161,26 @@ struct SdTiles {
 		if (mt >= vx4.size() / 64) { out[0] = out[1] = out[2] = 0; return; }
 		uint32_t ii = image_of(mt, mx, my);
 		if (ii / 2 >= vr4.size() / 64) { out[0] = out[1] = out[2] = 0; return; }
-		uint8_t idx = vr4[(ii / 2) * 64 + y * 8 + x];
-		if (ii & 1) idx = ~idx; // inverted art
-		palette(idx, out);
+		if (ii & 1) x = 7 - x; // bit 0: the image is drawn mirrored horizontally (the rest is the vr4 image index)
+		palette(vr4[(ii / 2) * 64 + y * 8 + x], out);
 	}
 };
+
+// File-name stem of a tileset's data (TileSet/<stem>.*), by OpenBW's tileset_index.
+inline const char* tileset_name(size_t tileset_index) {
+	static const char* names[8] = {"badlands", "platform", "install", "AshWorld", "Jungle", "Desert", "Ice", "Twilight"};
+	return names[tileset_index % 8];
+}
 
 // Lazily loads and caches assets by name from the extracted-data directory.
 class Assets {
 public:
 	explicit Assets(const std::string& data_dir) : files_(data_dir) {}
 	const HdTiles* tiles(size_t tileset_index) {
-		static const char* names[8] = {"badlands", "platform", "install", "AshWorld", "Jungle", "Desert", "Ice", "Twilight"};
 		auto it = tiles_.find(tileset_index);
 		if (it == tiles_.end()) {
 			auto t = std::make_unique<HdTiles>();
-			a_vector<uint8_t> buf; files_(buf, bwgame::format("TileSet/%s.dds.vr4", names[tileset_index % 8]));
+			a_vector<uint8_t> buf; files_(buf, bwgame::format("TileSet/%s.dds.vr4", tileset_name(tileset_index)));
 			if (!t->load(std::vector<uint8_t>(buf.begin(), buf.end()))) bwgame::error("HD tile file did not match the verified layout");
 			it = tiles_.emplace(tileset_index, std::move(t)).first;
 		}
@@ -197,12 +201,11 @@ public:
 	const SdTiles* sd() {
 		auto it = sd_.find(tileset_);
 		if (it == sd_.end()) {
-			static const char* names[8] = {"badlands", "platform", "install", "AshWorld", "Jungle", "Desert", "Ice", "Twilight"};
 			auto sp = std::make_unique<SdTiles>();
 			a_vector<uint8_t> a, b, c;
-			files_(a, bwgame::format("TileSet/%s.vx4ex", names[tileset_ % 8]));
-			files_(b, bwgame::format("TileSet/%s.vr4", names[tileset_ % 8]));
-			files_(c, bwgame::format("TileSet/%s.wpe", names[tileset_ % 8]));
+			files_(a, bwgame::format("TileSet/%s.vx4ex", tileset_name(tileset_)));
+			files_(b, bwgame::format("TileSet/%s.vr4", tileset_name(tileset_)));
+			files_(c, bwgame::format("TileSet/%s.wpe", tileset_name(tileset_)));
 			sp->load(std::vector<uint8_t>(a.begin(), a.end()), std::vector<uint8_t>(b.begin(), b.end()), std::vector<uint8_t>(c.begin(), c.end()));
 			it = sd_.emplace(tileset_, std::move(sp)).first;
 		}

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Run the first-person viewer. Builds it first if the binary is missing or older than the sources.
+# Run the first-person viewer (fp_play). Builds it first if the binary is missing or older than the sources.
 #
-#   ./run.sh                      play the bundled demo replay
-#   ./run.sh --replay my.rep      play another replay (extra args are passed to fp_play)
-#   ./run.sh --map "path/to.scx"  load a map instead (neutral units only; no game setup yet)
-#   ./run.sh --fps                FPS wave mode on GAME_MAP (gun art/sounds from WEAPONS_DIR if it exists)
-#   ./run.sh --game MAP           live RTS-style sandbox on a map
-#   ./run.sh --no-capture         leave the mouse pointer alone
+#   ./run.sh                          watch the bundled demo replay, from frame 6000
+#   ./run.sh --replay my.rep          watch another replay
+#   ./run.sh --map "path/to.scx"      load a map with neutral units only (use --game for a live game)
+#   ./run.sh --fps                    FPS wave mode on GAME_MAP, order-driven movement (gun art/sounds from WEAPONS_DIR if it exists)
+#   ./run.sh --fps --fps-move-shoot   FPS wave mode with free FPS-style movement (walk and shoot at once; experimental)
+#   ./run.sh --game MAP               live RTS-style sandbox on a map (add --fps for the wave mode there; pass --weapons DIR yourself)
+#   ./run.sh --no-capture             leave the mouse pointer alone
 #
+# Every other argument is passed to fp_play (e.g. --race R, --enemy R, --fire-rate N, --range N, --speed N, --no-vsync; see README).
 # Overrides: DATA_DIR (extracted CASC files), OPENBW_DIR (OpenBW headers), REPLAY (default replay), GAME_MAP (map for --fps),
 # WEAPONS_DIR (unpacked "Boltgun Doom" mod directory; local third-party assets, see README).
 set -euo pipefail

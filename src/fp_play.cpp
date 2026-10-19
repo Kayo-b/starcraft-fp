@@ -1,16 +1,23 @@
 // fp_play: interactive first-person viewer / sandbox over OpenBW (SDL2). Read-only with respect to game files.
 //
 // Modes
-//   --replay FILE   watch a replay from inside the world (no orders)
-//   --game MAP      live melee sandbox on a stock map: you are one player, a second base sits idle
-//                   (OpenBW has no AI, so the enemy only acts if you control it)
-//   --map FILE      load a map with neutral units only
+//   --replay FILE        watch a replay from inside the world (no orders)
+//   --game MAP           live melee sandbox on a stock map: you are one player, a second base sits idle
+//                        (OpenBW has no AI, so the enemy only acts if you control it)
+//   --game MAP --fps     FPS wave mode: you are a hero unit, waves of the enemy race hunt you (fp_fps.h)
+//   --map FILE           load a map with neutral units only
 //
-// Controls (game mode in brackets)
+// FPS options: --weapons MOD_DIR (gun art/sounds), --fps-move-shoot (free movement: walk and shoot at once),
+//   --fire-rate N / --range N / --speed N (percent of the StarCraft data, 10..1000)
+// Other options: --race R, --enemy R, --res WxH, --window WxH, --fullscreen, --sim-speed X, --start-frame N,
+//   --no-capture, --no-vsync, --selftest-input, --autotest [--screenshot F.ppm]
+//
+// Controls (game mode in brackets, FPS mode in braces)
 //   Mouse look; W/A/S/D move (Shift = run); ESC release/capture mouse; Q quit; F12 screenshot (PPM in cwd)
 //   P pause, = / - sim speed, R restart, F free camera, TAB next unit
 //   [LMB select unit under crosshair (Shift adds), RMB order (move/attack/gather/rally), E possess/release the selected unit,
 //    WASD then moves the possessed unit, T train worker, Y train combat unit, B build supply, X stop]
+//   {LMB (hold) fire, RMB move to the crosshair; the camera stays on the hero}
 #include "fp_render.h"
 #include "fp_game.h"
 #include "fp_fps.h"
@@ -272,7 +279,7 @@ int main(int argc, char** argv) {
 		else if (k == "--enemy") a.enemy = parse_race(next());
 		else if (k == "--res") sscanf(next(), "%dx%d", &a.rw, &a.rh);
 		else if (k == "--window") sscanf(next(), "%dx%d", &a.ww, &a.wh);
-		else if (k == "--speed") a.speed = atof(next());
+		else if (k == "--sim-speed") a.speed = atof(next());
 		else if (k == "--start-frame") a.start_frame = atoi(next());
 		else if (k == "--fullscreen") a.fullscreen = true;
 		else if (k == "--autotest") a.autotest = true;
@@ -285,7 +292,8 @@ int main(int argc, char** argv) {
 	if (a.fire_rate < 10 || a.fire_rate > 1000) die("--fire-rate must be 10..1000 (percent of the StarCraft fire rate)");
 	if (a.range_pct < 10 || a.range_pct > 1000) die("--range must be 10..1000 (percent of the StarCraft weapon range)");
 	if (a.speed_pct < 10 || a.speed_pct > 1000) die("--speed must be 10..1000 (percent of the StarCraft movement speed)");
-	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps] [--weapons MOD_DIR] | --map FILE) [--res WxH] [--window WxH] [--speed X] [--start-frame N] [--fullscreen] [--no-capture] [--selftest-input] [--autotest [--screenshot F.ppm]]");
+	if (a.speed < 0.125 || a.speed > 16) die("--sim-speed must be 0.125..16 (the = / - keys use the same range)");
+	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
 		Session s; s.open(assets, a);

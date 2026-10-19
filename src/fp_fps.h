@@ -67,11 +67,14 @@ public:
 	double range(const unit_t* u) {
 		const weapon_type_t* w = u->unit_type->ground_weapon.operator->(); return w ? g_.fn().weapon_max_range(u, w) : 0;
 	}
+	// Units we may still target. Callers can hold a pointer from an earlier frame (the crosshair pick is made before the
+	// next simulation step); a unit killed since keeps its slot but loses its sprite, so check at the moment of use.
+	bool targetable(const unit_t* u) const { return u && u->sprite && !g_.fn().unit_dying(u); }
 	// Enemy unit the crosshair is on, if it is in weapon range.
-	bool in_range(const unit_t* target) { unit_t* p = player(); if (!p || !target) return false;
+	bool in_range(const unit_t* target) { unit_t* p = player(); if (!p || !targetable(target)) return false;
 		double d = std::hypot(p->sprite->position.x - target->sprite->position.x, p->sprite->position.y - target->sprite->position.y);
 		return d <= range(p) + target->unit_type->dimensions.to.x; }
-	bool is_enemy(const unit_t* u) const { return u && u->owner == g_.enemy(); }
+	bool is_enemy(const unit_t* u) const { return targetable(u) && u->owner == g_.enemy(); }
 
 	enum class ShotResult { none, hit, miss };
 
