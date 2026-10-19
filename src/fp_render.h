@@ -5,6 +5,7 @@
 #include "actions.h"
 #include "replay.h"
 #include "fp_assets.h"
+#include "fp_terrain.h"
 #include <algorithm>
 #include <cmath>
 #include <thread>
@@ -64,20 +65,16 @@ public:
 	double map_w() const { return (double)gs_.map_width; }
 	double map_h() const { return (double)gs_.map_height; }
 
-	// 0 = wall (unwalkable), 1..4 = height level (low, middle, high, very high). Computed once per map load;
-	// creep-induced walkability changes during play are not tracked.
+	// The heightfield (fp_terrain.h), and from it the renderer's grid: 0 = wall (anything not walkable floor), 1..3 = floor
+	// level + 1. Computed once per map load; creep-induced walkability changes during play are not tracked.
 	void rebuild_terrain() {
-		mw_ = (int)gs_.map_walk_width; mh_ = (int)gs_.map_walk_height;
+		terrain_.build(st_, fn_);
+		mw_ = terrain_.w; mh_ = terrain_.h;
 		grid_.assign((size_t)mw_ * mh_, 0);
-		for (int y = 0; y < mh_; ++y) for (int x = 0; x < mw_; ++x) {
-			xy p{x * 8 + 4, y * 8 + 4};
-			if (!fn_.is_walkable(p)) continue;
-			auto& t = st_.tiles[(size_t)(p.y / 32) * gs_.map_tile_width + (p.x / 32)];
-			int lvl = 1;
-			if (t.flags & tile_t::flag_very_high) lvl = 4; else if (t.flags & tile_t::flag_high) lvl = 3; else if (t.flags & tile_t::flag_middle) lvl = 2;
-			grid_[(size_t)y * mw_ + x] = (uint8_t)lvl;
-		}
+		for (int y = 0; y < mh_; ++y) for (int x = 0; x < mw_; ++x)
+			if (terrain_.walkable(x, y)) grid_[(size_t)y * mw_ + x] = (uint8_t)(terrain_.at(x, y).level + 1);
 	}
+	const Terrain& terrain() const { return terrain_; }
 	int cell_at(int cx, int cy) const { return (cx < 0 || cy < 0 || cx >= mw_ || cy >= mh_) ? 0 : grid_[(size_t)cy * mw_ + cx]; }
 	bool can_stand(double x, double y, double r) const {
 		for (int dy = -1; dy <= 1; dy += 2) for (int dx = -1; dx <= 1; dx += 2)
@@ -383,7 +380,7 @@ private:
 
 	state& st_; game_state& gs_; state_functions& fn_; Assets& assets_;
 	int W_, H_; RenderParams p_; const HdTiles* tiles_;
-	int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_;
+	Terrain terrain_; int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_;
 	std::vector<UnitView> units_; std::vector<double> zbuf_;
 };
 

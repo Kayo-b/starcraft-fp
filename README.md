@@ -61,13 +61,16 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
 - System libraries: SDL2, SDL2_ttf, libpng, libvorbisfile (all already installed here; none were installed by this project).
 
 ## Tests
-`make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=.../W40K_Boltgun_Doom_a0.9.1` runs the headless suites: `fp_gametest` (RTS orders, determinism),
+`make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=.../W40K_Boltgun_Doom_a0.9.1` runs the headless suites: `fp_terraintest` (the terrain
+model against OpenBW's walkability and ground heights; `TERRAIN_MAPS=...` adds maps), `fp_gametest` (RTS orders, determinism),
 `fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
 Window tests (they open a window briefly): `fp_play ... --selftest-input` for replay, `--game MAP` and `--game MAP --fps --weapons MOD_DIR`
 (use `SDL_AUDIODRIVER=dummy` to stay silent); `--autotest` checks collision against OpenBW `is_walkable`.
 Golden views: `tools/golden.sh LABEL` renders fixed first-person views (`fp_view --spot K`: start locations, map centre,
 quarter points; four headings) of one stock map per tileset plus the demo replay into `out/golden/LABEL/*.png` contact sheets,
-to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset.
+to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset; `fp_view --heightmap F.ppm` the terrain model
+(green floor by height, yellow ramps, red cliffs, grey obstacles, blue water, black void). `build/terrain_survey DATA_DIR [--typemap DIR] MAP...`
+prints what a map's terrain data says (levels, unwalkable regions, cv5 types, cliff band depths).
 
 ## Roadmap / possible goals
 The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLAN.md). Ideas beyond it:
@@ -89,6 +92,8 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
     python3 tools/ppm2png.py out/fp.ppm out/fp.png
 
 ## Rendering model (prototype choices, not StarCraft facts)
+The terrain is a heightfield of minitiles (`src/fp_terrain.h`): walkable cells at their level (ramps as slopes), unwalkable cells as cliffs
+(topped at the higher level they separate), obstacles, water or void. The renderer below still draws it the older way until M2 of the plan.
 Unwalkable minitiles (8 px) are walls. Walkable minitiles are floors at one of the four StarCraft height levels (low/middle/high/very
 high, from the tile height flags), 32 px apart; walkable level changes render as step faces. Eye height is 12 px above the floor under
 the camera; FOV 66 degrees; floors and walls darken with distance. Units are flat billboards of their HD sprite frame, grounded on the
