@@ -31,15 +31,24 @@ struct Terrain {
 	static constexpr double kCell = 8.0;  // minitile size in pixels
 	static constexpr int kBand = 16;      // deepest cliff band seen in the survey (minitiles)
 	static constexpr int kRamp = 4;       // half-length of a ramp blend (minitiles)
-	double level_h = 32;                  // px per level (a prototype choice, not a StarCraft fact)
+	double level_h = 64;                  // px per level (a prototype choice; RenderParams::level_h explains it)
 
 	int w = 0, h = 0;
 	std::vector<Cell> cells;
 
 	const Cell& at(int cx, int cy) const { static const Cell outside; return (cx < 0 || cy < 0 || cx >= w || cy >= h) ? outside : cells[(size_t)cy * w + cx]; }
 	bool walkable(int cx, int cy) const { const Cell& c = at(cx, cy); return c.kind == floor; }
-	// Floor height under a world position (px); solid cells report their top.
+	// Height of the cell under a world position (px); solid cells report their top.
 	double height_at(double x, double y) const { return at((int)std::floor(x / kCell), (int)std::floor(y / kCell)).h; }
+	// Smooth floor height for eyes and feet: bilinear between the four nearest cell centres, floor cells only (a solid
+	// neighbour counts as this cell's height), so walking a ramp does not climb in per-cell steps.
+	double floor_height(double x, double y) const {
+		double hs = height_at(x, y), fx = x / kCell - 0.5, fy = y / kCell - 0.5;
+		int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy); double tx = fx - x0, ty = fy - y0;
+		auto hh = [&](int cx, int cy) { const Cell& c = at(cx, cy); return c.kind == floor ? (double)c.h : hs; };
+		double a = hh(x0, y0) + (hh(x0 + 1, y0) - hh(x0, y0)) * tx, b = hh(x0, y0 + 1) + (hh(x0 + 1, y0 + 1) - hh(x0, y0 + 1)) * tx;
+		return a + (b - a) * ty;
+	}
 
 	// Water and void by cv5 terrain type, per tileset (OpenBW tileset_index). Only the tilesets the stock maps cover are
 	// surveyed; Installation, Desert, Ice and Twilight are filled in by the M6 tileset sweep.
@@ -88,13 +97,27 @@ struct Terrain {
 				}
 			}
 		}
+		// Liquids and void take the level of the nearest floor, through any unwalkable ground (shores, platform edges).
+		std::vector<uint8_t> shore((size_t)w * h, 0);
+		{
+			std::vector<uint8_t> seen((size_t)w * h, 0); std::deque<std::pair<int, int>> q;
+			for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) if (cells[idx(x, y)].kind == floor) { seen[idx(x, y)] = 1; shore[idx(x, y)] = cells[idx(x, y)].level; q.push_back({x, y}); }
+			while (!q.empty()) {
+				auto [x, y] = q.front(); q.pop_front();
+				const int dx[4] = {1, -1, 0, 0}, dy[4] = {0, 0, 1, -1};
+				for (int k = 0; k < 4; ++k) {
+					int nx = x + dx[k], ny = y + dy[k];
+					if (nx < 0 || ny < 0 || nx >= w || ny >= h || seen[idx(nx, ny)]) continue;
+					seen[idx(nx, ny)] = 1; shore[idx(nx, ny)] = shore[idx(x, y)]; q.push_back({nx, ny});
+				}
+			}
+		}
 		for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
 			Cell& c = cells[idx(x, y)];
 			if (c.kind == floor) { c.h = (float)(c.level * level_h); continue; }
-			if (c.kind != obstacle) { // liquids and void sit at the lowest level around them
-				int lo = 2; for (int l = 0; l < 3; ++l) if (near[l][idx(x, y)] < cap) { lo = l; break; }
-				c.level = (uint8_t)lo;
-				c.h = (float)(c.kind == water ? lo * level_h - 6 : lo * level_h - 4 * level_h);
+			if (c.kind != obstacle) { // water a little below its shore's level; the void far below the platforms
+				c.level = shore[idx(x, y)];
+				c.h = (float)(c.kind == water ? c.level * level_h - 6 : c.level * level_h - 4 * level_h);
 				continue;
 			}
 			int top = -1, n_levels = 0, nearest = -1, nearest_d = cap;

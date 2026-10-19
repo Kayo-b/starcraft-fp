@@ -10,7 +10,7 @@
 // FPS options: --weapons MOD_DIR (gun art/sounds), --fps-move-shoot (free movement: walk and shoot at once),
 //   --fire-rate N / --range N / --speed N (percent of the StarCraft data, 10..1000)
 // Other options: --race R, --enemy R, --res WxH, --window WxH, --fullscreen, --sim-speed X, --start-frame N,
-//   --no-capture, --no-vsync, --selftest-input, --autotest [--screenshot F.ppm]
+//   --no-capture, --no-vsync, --view-dist PX, --eye PX, --level-h PX, --selftest-input, --autotest [--screenshot F.ppm]
 //
 // Controls (game mode in brackets, FPS mode in braces)
 //   Mouse look; W/A/S/D move (Shift = run); ESC release/capture mouse; Q quit; F12 screenshot (PPM in cwd)
@@ -39,6 +39,7 @@ struct Args {
 	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
+	RenderParams rp;
 };
 static void die(const char* m) { std::cerr << m << "\n"; std::exit(2); }
 static race_t parse_race(const std::string& s) { if (s == "terran") return race_t::terran; if (s == "protoss") return race_t::protoss; if (s == "zerg") return race_t::zerg; die("race must be terran, protoss or zerg"); return race_t::terran; }
@@ -51,11 +52,11 @@ struct Session {
 		if (!a.game_map.empty()) {
 			replay = false; game = std::make_unique<Game>(); game->open(a.data, a.game_map, a.race, a.enemy, 1, a.fps);
 			if (a.fps) { fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct, a.speed_pct, a.direct); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
-			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh);
+			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh, a.rp);
 		} else {
 			player = std::make_unique<replay_player>(); player->init(dir_loader(a.data)); replay = a.replay;
 			if (replay) player->load_replay_file(a.input); else player->load_map_file(a.input);
-			r = std::make_unique<Renderer>(player->st(), player->funcs(), assets, a.rw, a.rh);
+			r = std::make_unique<Renderer>(player->st(), player->funcs(), assets, a.rw, a.rh, a.rp);
 			for (int i = 0; i < a.start_frame && !done(); ++i) step();
 		}
 		r->update_units();
@@ -286,6 +287,9 @@ int main(int argc, char** argv) {
 		else if (k == "--no-capture") a.no_capture = true;
 		else if (k == "--selftest-input") { a.selftest_input = true; a.no_capture = true; }
 		else if (k == "--screenshot") a.screenshot = next();
+		else if (k == "--view-dist") a.rp.view_dist = atof(next());
+		else if (k == "--eye") a.rp.eye_h = atof(next());
+		else if (k == "--level-h") a.rp.level_h = atof(next());
 		else die("unknown option");
 	}
 	if (a.fps && a.game_map.empty()) die("--fps needs --game MAP");
@@ -293,7 +297,8 @@ int main(int argc, char** argv) {
 	if (a.range_pct < 10 || a.range_pct > 1000) die("--range must be 10..1000 (percent of the StarCraft weapon range)");
 	if (a.speed_pct < 10 || a.speed_pct > 1000) die("--speed must be 10..1000 (percent of the StarCraft movement speed)");
 	if (a.speed < 0.125 || a.speed > 16) die("--sim-speed must be 0.125..16 (the = / - keys use the same range)");
-	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--selftest-input] [--autotest [--screenshot F.ppm]]");
+	if (a.rp.view_dist < 200 || a.rp.eye_h < 1 || a.rp.level_h < 8) die("--view-dist must be >= 200, --eye >= 1, --level-h >= 8 (px)");
+	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
 		Session s; s.open(assets, a);

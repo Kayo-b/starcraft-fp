@@ -41,7 +41,10 @@ struct Pick {
 	bool ground = false; double gx = 0, gy = 0; // floor point under the crosshair, if the crosshair is on visible floor
 };
 
-struct RenderParams { double fov = 66, wall_h = 48, eye_h = 12; };
+// eye_h: eye above the floor under the camera; view_dist: how far rays go before the fog has closed in; level_h: height of
+// one terrain level (all px). StarCraft draws one level's cliff face ~40-64 px tall onto the map (the south-facing cliff
+// band is that much deeper than the north-facing one), so a level is 64 px rather than the tile size.
+struct RenderParams { double fov = 66, eye_h = 12, view_dist = 3000, level_h = 64; };
 
 // Default StarCraft player colours (red, blue, teal, purple, orange, brown, white, yellow); neutral/others grey.
 static inline void player_rgb(int owner, double out[3]) {
@@ -56,6 +59,7 @@ public:
 	Renderer(state& st, state_functions& fn, Assets& assets, int w, int h, RenderParams p = {})
 		: st_(st), gs_(*st.game), fn_(fn), assets_(assets), W_(w), H_(h), p_(p), tiles_(assets.tiles(gs_.tileset_index)) {
 		assets_.set_tileset(gs_.tileset_index);
+		terrain_.level_h = p_.level_h;
 		rebuild_terrain();
 	}
 	int width() const { return W_; }
@@ -108,12 +112,12 @@ public:
 	// Render into fb (W*H, 0xFFRRGGBB). `hide` (may be null) is not drawn (the unit the camera sits in).
 	void render(const Camera& cam, const unit_t* hide, uint32_t* fb, const Overlay* ov = nullptr, unsigned threads = 0) {
 		View v = view(cam);
-		zbuf_.assign(W_, 1e9);
+		zbuf_.assign((size_t)W_ * H_, kFar);
 		std::vector<Vis> vis = visible(cam, hide, v);
 		std::sort(vis.begin(), vis.end(), [](const Vis& a, const Vis& b) { return a.depth > b.depth; });
 
 		auto band = [&](int xa, int xb) {
-			for (int sx = xa; sx < xb; ++sx) column(cam, sx, v.dirx, v.diry, v.planex, v.planey, v.proj, v.horizon, v.eye_level, fb);
+			for (int sx = xa; sx < xb; ++sx) column(cam, sx, v, fb);
 			for (auto& vi : vis) sprite(cam, units_[vi.idx], vi.depth, vi.sx, v, fb, xa, xb);
 		};
 		unsigned n = threads ? threads : std::max(1u, std::min(12u, std::thread::hardware_concurrency()));
@@ -138,7 +142,7 @@ public:
 		for (auto& vi : visible(cam, hide, v)) {
 			const UnitView& un = units_[vi.idx]; if (!want(un.ptr)) continue;
 			Draw d = geometry(cam, un, vi.depth, vi.sx, v);
-			int col = std::max(0, std::min(W_ - 1, (int)vi.sx)); if (vi.depth > zbuf_[col]) continue;
+			if (vi.depth > depth_at((int)vi.sx, (d.y0 + d.y1) / 2)) continue; // its centre is behind terrain
 			double dx = vi.sx - W_ / 2.0, dy = (d.y0 + d.y1) / 2.0 - H_ / 2.0, dist = std::hypot(dx, dy);
 			if (dist < bd) { bd = dist; best = un.ptr; }
 		}
@@ -151,7 +155,7 @@ public:
 		std::vector<Vis> vis = visible(cam, hide, v);
 		std::sort(vis.begin(), vis.end(), [](const Vis& a, const Vis& b) { return a.depth < b.depth; }); // near -> far
 		for (auto& vi : vis) {
-			if (vi.depth > zbuf_[cx]) break; // everything further is behind the wall at the crosshair
+			if (vi.depth > depth_at(cx, cy)) break; // everything further is behind the terrain at the crosshair
 			Draw d = geometry(cam, units_[vi.idx], vi.depth, vi.sx, v);
 			if (cx < d.x0 || cx >= d.x1 || cy < d.y0 || cy >= d.y1) continue;
 			if (d.sp) { // ignore transparent pixels so you cannot select through gaps in a sprite
@@ -163,131 +167,102 @@ public:
 			}
 			pk.unit = units_[vi.idx].ptr; break;
 		}
-		double below = cy - v.horizon; // rows below the horizon line look at the floor
-		if (below >= 1.0) { double rowd = (p_.eye_h * v.proj) / below; if (rowd < zbuf_[cx]) { pk.ground = true; pk.gx = cam.x + v.dirx * rowd; pk.gy = cam.y + v.diry * rowd; } }
+		// the terrain point under the crosshair (the centre column's ray is the view direction); floor only
+		double dc = depth_at(cx, cy);
+		if (dc < kFar) {
+			double gx = cam.x + v.dirx * dc, gy = cam.y + v.diry * dc;
+			if (terrain_.walkable((int)std::floor(gx / kCell), (int)std::floor(gy / kCell))) { pk.ground = true; pk.gx = gx; pk.gy = gy; }
+		}
 		return pk;
 	}
 
 private:
+	struct View { double dirx, diry, planex, planey, proj, horizon; double eye_h; }; // eye_h: eye height above level-0 ground (px)
+	struct Vis { double depth, sx; int idx; };
+	struct Draw { const AnimSprite* sp; int frame; bool flip; int x0, x1, y0, y1; double wpx, hpx; };
 	static uint32_t pack(double r, double g, double b) { return 0xFF000000u | ((uint32_t)std::min(255.0, r) << 16) | ((uint32_t)std::min(255.0, g) << 8) | (uint32_t)std::min(255.0, b); }
 
-	void column(const Camera& cam, int sx, double dirx, double diry, double planex, double planey, double proj, double horizon, double eye_level, uint32_t* fb) {
-		double camx = 2.0 * sx / W_ - 1.0, rdx = dirx + planex * camx, rdy = diry + planey * camx;
+	static constexpr float kFar = 1e30f; // depth of sky and fog pixels
+	float depth_at(int x, int y) const { x = std::max(0, std::min(W_ - 1, x)); y = std::max(0, std::min(H_ - 1, y)); return zbuf_[(size_t)y * W_ + x]; }
+
+	// One screen column: march the ray through the heightfield front to back. A cell's top is drawn where it lies below
+	// the eye, its front face where it rises above the cell before; `top` is the highest row drawn so far, so nearer
+	// terrain hides what is behind it. Rays go on past cliffs up to view_dist: high ground shows its faces at full
+	// height from below, and low ground shows from above. Every pixel gets its depth (zbuf_) for sprites and picking.
+	void column(const Camera& cam, int sx, const View& v, uint32_t* fb) {
+		double camx = 2.0 * sx / W_ - 1.0, rdx = v.dirx + v.planex * camx, rdy = v.diry + v.planey * camx;
 		double gx = cam.x / kCell, gy = cam.y / kCell;
 		int mx = (int)std::floor(gx), my = (int)std::floor(gy);
 		double ddx = rdx == 0 ? 1e30 : std::fabs(1.0 / rdx), ddy = rdy == 0 ? 1e30 : std::fabs(1.0 / rdy);
 		int stx = rdx < 0 ? -1 : 1, sty = rdy < 0 ? -1 : 1;
 		double sdx = (rdx < 0 ? gx - mx : mx + 1.0 - gx) * ddx, sdy = (rdy < 0 ? gy - my : my + 1.0 - gy) * ddy;
-		int side = 0; bool hit = false; double dist = 0;
-		int cur = cell_at(mx, my); int cur_level = cur > 0 ? cur - 1 : 0;
-		double seg_start = 0;
-		struct Seg { double d0, d1; int level; };
-		std::vector<Seg> segs;
-		int wall_mx = 0, wall_my = 0, wall_side = 0, level_before = cur_level, prev_mx = mx, prev_my = my;
-		for (int step = 0; step < 4096; ++step) {
-			prev_mx = mx; prev_my = my;
-			if (sdx < sdy) { dist = sdx; sdx += ddx; mx += stx; side = 0; } else { dist = sdy; sdy += ddy; my += sty; side = 1; }
-			int c = cell_at(mx, my);
-			if (c == 0) { // a wall: the floor segment ends here
-				segs.push_back({seg_start, dist, cur_level});
-				hit = true; wall_mx = mx; wall_my = my; wall_side = side; level_before = cur_level; break;
-			}
-			int nl = c - 1;
-			if (nl != cur_level) { segs.push_back({seg_start, dist, cur_level}); seg_start = dist; cur_level = nl; }
-		}
-		if (!hit) segs.push_back({seg_start, 1e9, cur_level});
-		double perp = hit ? dist * kCell : 1e9;
-		zbuf_[sx] = perp;
-		const double eh = p_.eye_h + eye_level * 32.0; // eye height above level-0 ground
-		auto row_at = [&](double d, double h) { return horizon + (eh - h * 32.0) * proj / std::max(d, 1.0); };
-		// sky first: any row above the horizon not later covered by a floor segment above the eye
-		for (int sy = 0; sy < H_; ++sy) {
-			double t = std::max(0.0, std::min(1.0, sy / std::max(1.0, horizon)));
-			fb[(size_t)sy * W_ + sx] = pack(40 + 60 * t, 50 + 70 * t, 90 + 80 * t);
-		}
-		// floor segments: for each segment, the rows whose cast distance falls inside it
-		for (auto& seg : segs) {
-			double d0 = std::max(0.5, seg.d0 * kCell), d1 = std::min(seg.d1 * kCell, 1e9);
-			int ra = (int)std::round(row_at(d0, seg.level)), rb = (int)std::round(row_at(d1, seg.level));
-			int r0 = std::max(0, std::min(ra, rb)), r1 = std::min(H_ - 1, std::max(ra, rb));
-			for (int sy = r0; sy <= r1; ++sy) {
-				double d = (eh - seg.level * 32.0) * proj / (sy - horizon);
-				if (!(d >= d0 - 1e-6 && d <= d1 + 1e-6)) continue;
-				if (d > perp + 1e-6) continue; // beyond the wall
+		const double eh = v.eye_h, proj = v.proj, hz = v.horizon, maxd = p_.view_dist;
+		auto row_at = [&](double d, double h) { return hz + (eh - h) * proj / std::max(d, 0.5); };
+		auto first_row = [](double r) { return (int)std::ceil(r - 0.5); }; // first pixel row whose centre is at or below r
+		int top = H_;
+		auto put = [&](int sy, double d, double r, double g, double b) { // distance shading, then fog toward the horizon colour
+			double shade = 1.0 - 0.4 * std::min(1.0, d / maxd), f = std::max(0.0, std::min(1.0, (d - 0.4 * maxd) / (0.6 * maxd)));
+			size_t i = (size_t)sy * W_ + sx;
+			fb[i] = pack(r * shade * (1 - f) + kFog[0] * f, g * shade * (1 - f) + kFog[1] * f, b * shade * (1 - f) + kFog[2] * f);
+			zbuf_[i] = (float)d;
+		};
+		auto surface = [&](double h, double d0, double d1) { // top of a cell between ray distances d0..d1
+			if (h >= eh) return; // seen from below: hidden behind its own face
+			int r0 = std::max(0, first_row(row_at(d1, h))), r1 = std::min(top, first_row(row_at(d0, h)));
+			for (int sy = r0; sy < r1; ++sy) {
+				double d = std::max(d0, std::min(d1, (eh - h) * proj / (sy + 0.5 - hz)));
 				uint8_t t[3]; tile_sample(cam.x + rdx * d, cam.y + rdy * d, t);
-				double shade = std::max(0.35, 1.0 - d / 1400.0);
-				fb[(size_t)sy * W_ + sx] = pack(t[0] * shade, t[1] * shade, t[2] * shade);
+				put(sy, d, t[0], t[1], t[2]);
 			}
+			if (r0 < r1) top = r0;
+		};
+		auto face = [&](double h0, double h1, double d, int side, int inx, int iny) { // a cell's front face, rising h0 -> h1
+			double rt = row_at(d, h1), rb = row_at(d, h0);
+			int r0 = std::max(0, first_row(rt)), r1 = std::min(top, first_row(rb));
+			if (r0 >= r1) return;
+			double hx = cam.x + rdx * d, hy = cam.y + rdy * d;
+			for (int sy = r0; sy < r1; ++sy) {
+				double hp = h0 + (h1 - h0) * (rb - (sy + 0.5)) / std::max(1e-6, rb - rt); // terrain height at this pixel
+				// Stand-in until M3 maps the cliff band: the face's art is the solid cell's art read inward, deeper for
+				// higher points (StarCraft draws a cliff's face onto the ground north of its foot).
+				double into = (hp - h0) + 0.5;
+				uint8_t t[3]; tile_sample(hx + inx * into, hy + iny * into, t, true);
+				double k = (0.62 + 0.38 * (hp - h0) / std::max(1e-6, h1 - h0)) * (side ? 0.78 : 1.0); // darker at the foot; side light
+				put(sy, d, t[0] * k, t[1] * k, t[2] * k);
+			}
+			top = r0;
+		};
+		const Terrain::Cell* c = &terrain_.at(mx, my);
+		double d_in = 0;
+		for (int step = 0; step < 16384 && top > 0; ++step) {
+			double d_out = std::min(sdx, sdy) * kCell;
+			surface(c->h, d_in, std::min(d_out, maxd));
+			if (d_out >= maxd) break;
+			int pmx = mx, pmy = my, side;
+			if (sdx < sdy) { sdx += ddx; mx += stx; side = 0; } else { sdy += ddy; my += sty; side = 1; }
+			const Terrain::Cell* n = &terrain_.at(mx, my);
+			if (n->kind == Terrain::edge) break; // left the map
+			d_in = d_out;
+			if (n->h > c->h) face(c->h, n->h, d_in, side, mx - pmx, my - pmy);
+			c = n;
 		}
-		// wall / ramp face: the wall face of the original game is baked into the BOTTOM rows of the higher tile's
-		// artwork (the cliff hangs over the lower ground in the flat isometric art). Sample that band so the face is
-		// real map art. Blank art (white placeholder frames) falls back to a shaded rock tone.
-		if (hit) {
-			int wc = cell_at(wall_mx, wall_my);
-			bool step_up = wc > 0;                 // walkable higher ground: a ramp step
-			int top_level = step_up ? wc - 1 : level_before + 1; // cliffs show one 32px step from below
-			int levels = std::max(1, top_level - level_before);
-			double hx = cam.x + rdx * perp, hy = cam.y + rdy * perp;
-			double u = wall_side ? hx : hy;        // coordinate along the face
-			int r_bot = (int)std::round(row_at(perp, level_before));
-			int r_top = (int)std::round(row_at(perp, top_level));
-			int span = std::max(1, std::abs(r_bot - r_top));
-			// the solid (higher) cell whose art carries the face
-			int solid_mx = step_up ? wall_mx : prev_mx, solid_my = step_up ? wall_my : prev_my;
-			// boundary column just inside the solid cell
-			double bfx, bfy;
-			if (wall_side == 0) { bfx = solid_mx < wall_mx ? solid_mx * kCell + 7.5 : wall_mx * kCell + 0.5; bfy = 0; }
-			else { bfy = solid_my < wall_my ? solid_my * kCell + 7.5 : wall_my * kCell + 0.5; bfx = 0; }
-			// SD art for the face: the classic minitile images contain the real wall/ramp face pixels.
-			// The face is the bottom half of the boundary minitile's image on the solid (higher) side.
-			const SdTiles* sd = assets_.sd();
-			int smx = step_up ? wall_mx : prev_mx, smy = step_up ? wall_my : prev_my; // solid minitile
-			size_t s_mt = st_.tiles_mega_tile_index[(size_t)(smy / 4) * gs_.map_tile_width + (smx / 4)];
-			int mtx = smx & 3, mty = smy & 3;
-			// fallback rock tone (computed lazily, only if the SD art turns out blank here)
-			double frr = 0, fgg = 0, fbb = 0; bool tone_done = false;
-			auto ensure_tone = [&]() {
-				if (tone_done) return; tone_done = true;
-				int fn = 0;
-				for (int iy = 0; iy < 96; iy += 8) {
-					uint8_t t[3];
-					if (wall_side == 0) tile_sample(smx * kCell + 0.5, (smy / 4) * 32 + iy / 4.0, t, true);
-					else tile_sample((smx / 4) * 32 + iy / 4.0, smy * kCell + 0.5, t, true);
-					frr += t[0]; fgg += t[1]; fbb += t[2]; ++fn;
-				}
-				if (fn) { frr /= fn; fgg /= fn; fbb /= fn; }
-			};
-			for (int sy = std::max(0, std::min(r_top, r_bot)); sy <= std::min(H_ - 1, std::max(r_top, r_bot)); ++sy) {
-				double v = (double)(sy - std::min(r_top, r_bot)) / span; // 0 = face top, 1 = face bottom
-				uint8_t t[3] = {0, 0, 0};
-				if (sd && sd->ok) {
-					int art_x = (int)std::fmod(u, 8.0); if (art_x < 0) art_x += 8;
-					int art_y = 4 + (int)(v * 3.0); // the face hangs in the bottom half of the minitile image
-					sd->texel(s_mt, mtx, mty, art_x, art_y, t);
-				}
-				if (t[0] < 8 && t[1] < 8 && t[2] < 8) { // black placeholder (space/void): shaded rock in the tile's own tone
-					ensure_tone();
-					double gr = 0.55 + 0.25 * (1.0 - v);
-					t[0] = (uint8_t)(frr * gr); t[1] = (uint8_t)(fgg * gr); t[2] = (uint8_t)(fbb * gr);
-				}
-				double vshade = 0.62 + 0.38 * (1.0 - v);
-				double shade = std::max(0.3, 1.0 - perp / 1000.0) * (wall_side ? 0.75 : 1.0) * vshade;
-				fb[(size_t)sy * W_ + sx] = pack(t[0] * shade, t[1] * shade, t[2] * shade);
-			}
+		// rows nothing covered: sky above the horizon, fog below it (beyond the view distance or the map edge)
+		for (int sy = 0; sy < top; ++sy) {
+			double t = std::max(0.0, std::min(1.0, sy / std::max(1.0, hz)));
+			size_t i = (size_t)sy * W_ + sx;
+			fb[i] = sy < hz ? pack(40 + (kFog[0] - 40) * t, 50 + (kFog[1] - 50) * t, 90 + (kFog[2] - 90) * t) : pack(kFog[0], kFog[1], kFog[2]);
+			zbuf_[i] = kFar;
 		}
 	}
+	static constexpr double kFog[3] = {100, 120, 170}; // the sky's colour at the horizon
 
-	struct View { double dirx, diry, planex, planey, proj, horizon; double eye_level; };
-	struct Vis { double depth, sx; int idx; };
-	struct Draw { const AnimSprite* sp; int frame; bool flip; int x0, x1, y0, y1; double wpx, hpx; };
 
 	View view(const Camera& cam) const {
 		const double PI = 3.14159265358979323846, fov = p_.fov * PI / 180.0, hd = cam.heading * PI / 180.0;
 		View v; v.dirx = std::cos(hd); v.diry = std::sin(hd);
 		v.planex = -v.diry * std::tan(fov / 2); v.planey = v.dirx * std::tan(fov / 2);
 		v.proj = (W_ / 2.0) / std::tan(fov / 2); v.horizon = H_ / 2.0 + cam.pitch;
-		int lc = cell_at((int)std::floor(cam.x / kCell), (int)std::floor(cam.y / kCell)); // eye height follows the terrain level
-		v.eye_level = lc > 0 ? lc - 1 : 0;
+		v.eye_h = p_.eye_h + terrain_.floor_height(cam.x, cam.y); // the eye follows the terrain under the camera (ramps too)
 		return v;
 	}
 	std::vector<Vis> visible(const Camera& cam, const unit_t* hide, const View& v) const {
@@ -312,9 +287,7 @@ private:
 			d.frame = un.frame_base + off;
 		}
 		if (d.sp && (d.frame < 0 || d.frame >= (int)d.sp->frames.size())) d.sp = nullptr;
-		int ul = cell_at((int)std::floor(un.x / kCell), (int)std::floor(un.y / kCell)); ul = ul > 0 ? ul - 1 : 0; // the floor level the unit stands on
-		double eh = p_.eye_h + v.eye_level * 32.0;
-		double base = v.horizon + (eh - ul * 32.0) * v.proj / depth;
+		double base = v.horizon + (v.eye_h - terrain_.floor_height(un.x, un.y)) * v.proj / depth; // the floor the unit stands on
 		if (d.sp) {
 			// The unit position anchors the CENTER of the sprite box (same convention as the community renderers):
 			// a frame at (xoff,yoff) spans below the anchor, so most of the art sits lower than a bottom-aligned billboard.
@@ -340,9 +313,9 @@ private:
 			const auto& fr = d.sp->frames[d.frame];
 			double shade = std::max(0.4, 1.0 - depth / 1400.0), pc[3]; player_rgb(un.owner, pc);
 			for (int x = std::max(xa, d.x0); x < std::min(xb, d.x1); ++x) {
-				if (depth > zbuf_[x]) continue;
 				double u = (x - d.x0 + 0.5) / std::max(1.0, d.wpx); if (d.flip) u = 1.0 - u;
 				for (int y = std::max(0, d.y0); y < std::min(H_, d.y1); ++y) {
+					if (depth > zbuf_[(size_t)y * W_ + x]) continue; // behind terrain at this pixel
 					double vv = (y - d.y0 + 0.5) / std::max(1.0, d.hpx);
 					int tx = fr.x + (int)(u * fr.w), ty = fr.y + (int)(vv * fr.h);
 					uint8_t t[4]; d.sp->texel(tx, ty, t);
@@ -357,14 +330,14 @@ private:
 			}
 		} else { // flat fallback in the player colour
 			double pc[3]; player_rgb(un.owner, pc); uint32_t c = pack(pc[0], pc[1], pc[2]);
-			for (int x = std::max(xa, d.x0); x <= std::min(xb - 1, d.x1); ++x) { if (depth > zbuf_[x]) continue; for (int y = std::max(0, d.y0); y < std::min(H_, d.y1); ++y) fb[(size_t)y * W_ + x] = c; }
+			for (int x = std::max(xa, d.x0); x <= std::min(xb - 1, d.x1); ++x) for (int y = std::max(0, d.y0); y < std::min(H_, d.y1); ++y) if (depth <= zbuf_[(size_t)y * W_ + x]) fb[(size_t)y * W_ + x] = c;
 		}
 	}
 
 	// Selection brackets and a health/shield bar above a unit.
 	void mark(const Camera& cam, const UnitView& un, double depth, double sxc, const View& v, uint32_t* fb, bool selected) {
 		Draw d = geometry(cam, un, depth, sxc, v);
-		int cxm = std::max(0, std::min(W_ - 1, (int)sxc)); if (depth > zbuf_[cxm]) return;
+		if (depth > depth_at((int)sxc, (d.y0 + d.y1) / 2)) return; // its centre is behind terrain
 		auto put = [&](int x, int y, uint32_t c) { if (x >= 0 && y >= 0 && x < W_ && y < H_) fb[(size_t)y * W_ + x] = c; };
 		uint32_t col = selected ? 0xFF40FF40 : 0xFFFF4040;
 		int L = std::max(4, (d.x1 - d.x0) / 5);
@@ -381,7 +354,7 @@ private:
 	state& st_; game_state& gs_; state_functions& fn_; Assets& assets_;
 	int W_, H_; RenderParams p_; const HdTiles* tiles_;
 	Terrain terrain_; int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_;
-	std::vector<UnitView> units_; std::vector<double> zbuf_;
+	std::vector<UnitView> units_; std::vector<float> zbuf_; // per-pixel depth of the terrain (kFar for sky and fog)
 };
 
 } // namespace fp
