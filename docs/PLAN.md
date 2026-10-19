@@ -47,15 +47,21 @@ Status: `todo`, `doing`, `done`.
 - **M2.2** `done` Map edge: beyond the border the world continues as the map's mirror image, darkened (96 cells),
   then a plain ground plane in the map's average colour; resources near the edge stood against the sky below the
   horizon and looked like they floated. 3.2 ms on Bottleneck, 4.4 ms in the demo base view (sprites: M4).
-- **M3** `todo` Faces from the map's art: a south-facing cliff's face is its band's HD art read from the plateau edge
-  down (StarCraft's view is a vertical oblique projection, so no un-skew); diagonal cliffs along the band; back faces
-  reuse the nearest south column, mirrored; band tops from the nearest high ground. The SD face path goes.
+- **M3** `done` Cliffs from the map's art. StarCraft paints a cliff's face onto the map as the band between its foot
+  and its top. Natural tilesets (Badlands, Jungle, AshWorld, Desert, Ice, Twilight): the band is a slope rising from
+  foot to top (by its distances to the two levels) with the art draped on it, Titan Reactor's approach (its terrain
+  generator, `src/image/generate-map/`, was read for this). Space Platform and Installation: the band stays a block,
+  its vertical face carrying the band's art from foot (bottom) to far side (top). A level is 112 px (Titan Reactor:
+  mid ~80, high ~128); obstacles stand 32 px (72 with "very high") above the highest floor beside them; ramps blend
+  over 12 cells each side (~30 degrees). Terrain 2.7 ms in the demo base view. The SD face path is unused (removal
+  with M5). Back faces of block cliffs read their own (thin) band.
 - **M4** `todo` All sprites as the original draws them: `sprites_on_tile_line` (units, bullets, explosions, deaths,
   doodad sprites), every image of a sprite, shadows as floor decals; flyers at altitude; smoothing and a size clamp up
   close (also the sprite fill cost: front-to-back without overdraw); buildings anchored on their footprint.
 - **M5** `todo` Doodads standing up: each placed doodad's art rebuilt from its cv5 group and drawn as an upright quad
   on its footprint; obstacle heights from the art.
-- **M6** `todo` Tileset sweep: golden views for all 8 tilesets, per-tileset water/lava/ice/space void, sky per
+- **M6** `todo` Tileset sweep: golden views for all 8 tilesets, per-tileset water/lava/ice/space void (water and lava
+  by SD palette index 1-13 / 248-254, as Titan Reactor detects them, instead of the cv5 type table), sky per
   tileset. Accepted when every pixel is written, no face stripes, every cliff is visible from
   both sides and the budget holds.
 
@@ -83,7 +89,8 @@ Status: `todo`, `doing`, `done`.
 - A short play check by a person: feel cannot be tested headless.
 
 ## Known risks
-- Cliff art exists only for the faces StarCraft's camera shows (south-facing); back faces are reused and mirrored.
+- Cliff art exists only for the faces StarCraft's camera shows (south-facing); draped slopes show the band's art on
+  every side, block faces facing north show their thin band.
 - Doodads are baked into the terrain art; some have no clean footprint and need per-tileset handling.
 - Water, lava and the space platform's void need tileset-specific classification (cv5 groups are not documented here
   yet; M1 starts with a survey).

@@ -12,6 +12,11 @@
 // ground) is a cliff topped at the higher level; otherwise an obstacle a little above its level. Walkable cells next to
 // a different level over walkable ground (ramps) blend the two heights over kRamp cells, so ramps become slopes.
 //
+// Cliffs (M3): StarCraft paints a cliff's face onto the map as the band between its foot and its top. On natural
+// tilesets the band becomes a slope rising from the foot to the top, and the map art draped on it is the face (the
+// approach of Titan Reactor's terrain generator); on artificial ones (Space Platform, Installation), whose cliffs are
+// metal walls, the band stays a block with a vertical face onto which the renderer maps the band's art.
+//
 // Shape (what the renderer draws, build_shape): floors are one continuous surface, with heights at cell corners (the mean
 // of the floor cells sharing the corner) interpolated inside each cell, so ramps are smooth slopes rather than steps.
 // Walls follow StarCraft's isometric edges (the 64x32 diamond grid's 2:1 diagonals, which the 8 px grid turns into 2x1
@@ -21,6 +26,7 @@
 #pragma once
 #include "bwgame.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <deque>
 #include <vector>
@@ -33,28 +39,42 @@ struct Terrain {
 	enum Flags : uint8_t { ramp = 1, doodad = 2, very_high = 4, flat = 8 }; // flat: drawn as one level top (no split, no slope)
 	struct Cell {
 		uint8_t kind = edge, level = 0, flags = 0, type = 0; // level: floor level, or the top level of a cliff
+		uint8_t band = 0, pad[3] = {0, 0, 0};                // cliffs: cells from here to the floor at the top (explicit padding: cells compare bytewise)
 		float h = 0;                                         // top surface height in px above level-0 ground
 	};
 	static constexpr double kCell = 8.0;  // minitile size in pixels
 	static constexpr int kBand = 16;      // deepest cliff band seen in the survey (minitiles)
-	static constexpr int kRamp = 8;       // half-length of a ramp blend (minitiles): a level's rise over ~2 levels' length
-	double level_h = 64;                  // px per level (a prototype choice; RenderParams::level_h explains it)
+	static constexpr int kRamp = 12;      // half-length of a ramp blend (minitiles): a level's rise at ~30 degrees
+	static constexpr double kObstacle = 32, kObstacleHigh = 72; // obstacle tops above their level (px; vf4 "very high" bit: high)
+	double level_h = 112;                 // px per level (a prototype choice; RenderParams::level_h explains it)
+	bool drape = true;                    // cliffs as draped slopes (natural tilesets) or blocks with faces (artificial)
 
 	int w = 0, h = 0;
 	std::vector<Cell> cells;
 
 	// A straight wall through a cell: points p (cell units, 0..1 inside the cell) with nx*u + ny*v > c are side 1 (solid),
 	// the others side 0 (open); kind and height of each side. (nx, ny) has unit length and points into the solid side.
-	struct Split { float nx, ny, c; uint8_t kind[2]; float h[2]; };
+	struct Split { float nx, ny, c; uint8_t kind[2]; float h[2]; uint8_t band; }; // band: of the solid side (cliffs)
 	struct Side { uint8_t kind; float h; };
 	std::vector<float> corner_h;   // (w+1)*(h+1) floor heights at cell corners; NaN where no floor cell touches the corner
+	std::vector<std::array<float, 4>> corners; // per cell: its corner heights resolved (NaN -> the cell's own height), for the renderer
 	std::vector<int32_t> split_of; // per cell: index into splits, or -1
 	std::vector<Split> splits;
-	static bool is_solid(uint8_t k) { return k == cliff || k == obstacle; }
+	// Blocks (walls) and surfaces (drawn sloped from corner heights): draped cliffs are surfaces, block cliffs are walls.
+	bool is_solid(uint8_t k) const { return k == obstacle || (k == cliff && !drape); }
+	bool is_surface(uint8_t k) const { return k == floor || (k == cliff && drape); }
+	// Space Platform and Installation: cliffs are built walls, kept as blocks.
+	static bool drapes_cliffs(size_t tileset) { return tileset != 1 && tileset != 2; }
 
 	const Split* split(int cx, int cy) const {
 		if (cx < 0 || cy < 0 || cx >= w || cy >= h || split_of.empty()) return nullptr;
 		int32_t i = split_of[(size_t)cy * w + cx]; return i < 0 ? nullptr : &splits[i];
+	}
+	// Surface height inside a surface cell at (u,v), from its resolved corners (fast path for the renderer).
+	double corner_at(int cx, int cy, double u, double v) const {
+		const auto& q = corners[(size_t)cy * w + cx];
+		double a = q[0] + (q[1] - q[0]) * u, b = q[2] + (q[3] - q[2]) * u;
+		return a + (b - a) * v;
 	}
 	// Floor height inside cell (cx,cy) at (u,v) from its corners; corners without floor take `fallback`.
 	double floor_at(int cx, int cy, double u, double v, double fallback) const {
@@ -67,7 +87,7 @@ struct Terrain {
 	Side side_value(int cx, int cy, double u, double v, int side) const {
 		const Cell& c = at(cx, cy); const Split* sp = side >= 0 ? split(cx, cy) : nullptr;
 		Side r{sp ? sp->kind[side] : c.kind, sp ? sp->h[side] : c.h};
-		if (r.kind == floor) r.h = (float)floor_at(cx, cy, u, v, r.h);
+		if (is_surface(r.kind)) r.h = (float)floor_at(cx, cy, u, v, r.h);
 		return r;
 	}
 	// What is drawn at (u,v) of cell (cx,cy).
@@ -96,7 +116,7 @@ struct Terrain {
 	void build(const state& st, state_functions& fn) {
 		const game_state& gs = *st.game;
 		const a_vector<uint8_t>& cv5 = st.global->tileset_cv5.at(gs.tileset_index);
-		w = (int)gs.map_walk_width; h = (int)gs.map_walk_height;
+		w = (int)gs.map_walk_width; h = (int)gs.map_walk_height; drape = drapes_cliffs(gs.tileset_index);
 		cells.assign((size_t)w * h, Cell{});
 		const int tw = (int)gs.map_tile_width;
 		auto idx = [&](int x, int y) { return (size_t)y * w + x; };
@@ -164,10 +184,17 @@ struct Terrain {
 				if (d <= kBand) { top = l; ++n_levels; }
 				if (d < nearest_d) { nearest_d = d; nearest = l; }
 			}
-			if (n_levels >= 2) { c.kind = cliff; c.level = (uint8_t)top; c.h = (float)(top * level_h); }
+			if (n_levels >= 2) {
+				c.kind = cliff; c.level = (uint8_t)top; c.band = (uint8_t)std::min<int>(255, near[top][idx(x, y)]);
+				if (drape) { // rise from the foot (the lowest level within the band) to the top, by distance to each
+					int lo = 0; while (lo < top && near[lo][idx(x, y)] > kBand) ++lo;
+					double dl = near[lo][idx(x, y)], dh = near[top][idx(x, y)];
+					c.h = (float)((lo + (top - lo) * dl / (dl + dh)) * level_h);
+				} else c.h = (float)(top * level_h);
+			}
 			else {
 				int l = top >= 0 ? top : nearest >= 0 ? nearest : 0;
-				c.level = (uint8_t)l; c.h = (float)(l * level_h + ((c.flags & very_high) ? 1.5 : 0.5) * level_h);
+				c.level = (uint8_t)l; c.h = (float)(l * level_h + ((c.flags & very_high) ? kObstacleHigh : kObstacle));
 			}
 		}
 
@@ -203,16 +230,23 @@ struct Terrain {
 			c.h = (float)((c.level + (other[i] - (int)c.level) * t) * level_h);
 			c.flags |= ramp;
 		}
+		// obstacles stand above the highest floor beside them (ramps can rise past their level)
+		for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+			Cell& c = cells[idx(x, y)]; if (c.kind != obstacle) continue;
+			double base = c.level * level_h;
+			for (int k = 0; k < 4; ++k) { int nx = x + dx[k], ny = y + dy[k]; if (nx >= 0 && ny >= 0 && nx < w && ny < h && cells[idx(nx, ny)].kind == floor) base = std::max(base, (double)cells[idx(nx, ny)].h); }
+			c.h = (float)(base + ((c.flags & very_high) ? kObstacleHigh : kObstacle));
+		}
 		build_shape();
 	}
 
 	void build_shape() {
 		auto idx = [&](int x, int y) { return (size_t)y * w + x; };
-		// floor heights at corners
+		// surface heights at corners (floors, and draped cliffs)
 		corner_h.assign((size_t)(w + 1) * (h + 1), NAN);
 		for (int Y = 0; Y <= h; ++Y) for (int X = 0; X <= w; ++X) {
 			double sum = 0; int n = 0;
-			for (int dy = -1; dy <= 0; ++dy) for (int dx = -1; dx <= 0; ++dx) { const Cell& c = at(X + dx, Y + dy); if (c.kind == floor) { sum += c.h; ++n; } }
+			for (int dy = -1; dy <= 0; ++dy) for (int dx = -1; dx <= 0; ++dx) { const Cell& c = at(X + dx, Y + dy); if (is_surface(c.kind)) { sum += c.h; ++n; } }
 			if (n) corner_h[(size_t)Y * (w + 1) + X] = (float)(sum / n);
 		}
 		// solidness smoothed at corners: binomial weights over the 6 cells on each axis around the corner (cells X-3..X+2),
@@ -257,15 +291,20 @@ struct Terrain {
 			}
 			if (best < 0) continue;
 			const Cell& other = cells[best];
-			Split sp{(float)nx, (float)ny, (float)c, {}, {}};
+			Split sp{(float)nx, (float)ny, (float)c, {}, {}, own_solid ? self.band : other.band};
 			int so = own_solid ? 1 : 0;
 			sp.kind[so] = self.kind; sp.h[so] = self.h; sp.kind[1 - so] = other.kind; sp.h[1 - so] = other.h;
 			split_of[idx(x, y)] = (int32_t)splits.size(); splits.push_back(sp);
 		}
+		corners.assign((size_t)w * h, {0, 0, 0, 0});
+		for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+			float own = cells[idx(x, y)].h; auto& q = corners[idx(x, y)];
+			for (int k = 0; k < 4; ++k) { float f = corner_h[(size_t)(y + k / 2) * (w + 1) + x + k % 2]; q[k] = std::isnan(f) ? own : f; }
+		}
 		// flat cells: the renderer's fast path
 		for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
 			Cell& c = cells[idx(x, y)]; bool f = split_of[idx(x, y)] < 0;
-			if (f && c.kind == floor)
+			if (f && is_surface(c.kind))
 				for (int dy = 0; dy <= 1 && f; ++dy) for (int dx = 0; dx <= 1; ++dx) { float ch = corner_h[(size_t)(y + dy) * (w + 1) + x + dx]; if (!std::isnan(ch) && ch != c.h) { f = false; break; } }
 			if (f) c.flags |= flat; else c.flags &= ~flat;
 		}
