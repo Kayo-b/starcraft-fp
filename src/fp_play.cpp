@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
 						case SDLK_MINUS: speed = std::max(0.125, speed / 2); break;
 						case SDLK_TAB: v.cycle_follow(*s.r, s.live() ? s.game->owner() : -1); if (s.live() && v.follow) s.game->select(const_cast<unit_t*>(v.follow)); break;
 						case SDLK_f: v.follow = nullptr; break;
-						case SDLK_r: s.open(assets, a); v.follow = nullptr; v.spawn(*s.r); begin_game_view(); acc = 0; moving = false; firing = false; last_shots = 0; last_hp = -1; dead_seen = false; flash = 0; break;
+						case SDLK_r: s.open(assets, a); pick = Pick{}; v.follow = nullptr; /* the old game's units are gone: drop pointers into it */ v.spawn(*s.r); begin_game_view(); acc = 0; moving = false; firing = false; last_shots = 0; last_hp = -1; dead_seen = false; flash = 0; break;
 						case SDLK_F12: save_ppm(bwgame::format("fp_shot_%03d.ppm", shots++), fb, a.rw, a.rh); break;
 						case SDLK_e: if (s.live()) { // possess the selected unit / release
 							if (v.follow) { v.follow = nullptr; cmd.say("Free camera"); }

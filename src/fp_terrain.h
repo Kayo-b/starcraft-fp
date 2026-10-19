@@ -30,7 +30,7 @@ using namespace bwgame;
 
 struct Terrain {
 	enum Kind : uint8_t { floor, cliff, obstacle, water, space, edge };
-	enum Flags : uint8_t { ramp = 1, doodad = 2, very_high = 4 };
+	enum Flags : uint8_t { ramp = 1, doodad = 2, very_high = 4, flat = 8 }; // flat: drawn as one level top (no split, no slope)
 	struct Cell {
 		uint8_t kind = edge, level = 0, flags = 0, type = 0; // level: floor level, or the top level of a cliff
 		float h = 0;                                         // top surface height in px above level-0 ground
@@ -261,6 +261,13 @@ struct Terrain {
 			int so = own_solid ? 1 : 0;
 			sp.kind[so] = self.kind; sp.h[so] = self.h; sp.kind[1 - so] = other.kind; sp.h[1 - so] = other.h;
 			split_of[idx(x, y)] = (int32_t)splits.size(); splits.push_back(sp);
+		}
+		// flat cells: the renderer's fast path
+		for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+			Cell& c = cells[idx(x, y)]; bool f = split_of[idx(x, y)] < 0;
+			if (f && c.kind == floor)
+				for (int dy = 0; dy <= 1 && f; ++dy) for (int dx = 0; dx <= 1; ++dx) { float ch = corner_h[(size_t)(y + dy) * (w + 1) + x + dx]; if (!std::isnan(ch) && ch != c.h) { f = false; break; } }
+			if (f) c.flags |= flat; else c.flags &= ~flat;
 		}
 	}
 };

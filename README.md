@@ -93,15 +93,18 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
     python3 tools/ppm2png.py out/fp.ppm out/fp.png
 
 ## Rendering model (prototype choices, not StarCraft facts)
-- Terrain: a heightfield of minitiles (8 px, `src/fp_terrain.h`). Walkable cells sit at their StarCraft level (low/mid/high, 64 px apart),
-  ramps are slopes; unwalkable cells are solid blocks: cliffs topped at the higher level they separate, obstacles half a level above
-  theirs (one and a half with vf4's "very high" bit), water just below its shore, the space platform's void far below.
+- Terrain: a heightfield of minitiles (8 px, `src/fp_terrain.h`). Walkable cells sit at their StarCraft level (low/mid/high, 64 px apart);
+  unwalkable cells are solid blocks: cliffs topped at the higher level they separate, obstacles half a level above theirs (one and a
+  half with vf4's "very high" bit), water just below its shore, the space platform's void far below. Floors are one continuous surface
+  (heights at cell corners), so ramps are smooth slopes; walls follow the isometric grid's 2:1 edges (the solid/open field is smoothed
+  and contoured, a boundary cell holds the straight line through it) instead of 8 px staircases.
 - Renderer: each screen column marches its ray through the heightfield front to back, drawing a cell's top where it is below the eye
   and its face where it rises above the cell before; rays go on past cliffs to `--view-dist` (default 3000 px), so high ground shows
   from below at full height and low ground shows from above. Fog closes in toward the view distance. Every pixel keeps its depth, so
   sprites hide behind terrain per pixel and the crosshair picks units and floor points through it.
-- Eye 12 px above the (smoothly interpolated) floor under the camera; FOV 66 degrees. Units are flat billboards of their HD sprite frame,
-  standing on the floor under them and anchored at the box centre like the original renderer. Works with any map OpenBW can load (all
+- Eye 12 px above the floor under the camera; FOV 66 degrees. Units are flat billboards of their HD sprite frame, standing on the floor
+  under them on the sprite's median frame bottom (the original renderer centres the box on the position, which drawn upright sinks
+  the lower half of the art into the floor). Works with any map OpenBW can load (all
   eight tilesets via their HD DDS data). `--eye PX`, `--level-h PX` and `--view-dist PX` tune the look (fp_play and fp_view).
 
 ## HD formats (verified on real 1.23.10.13515 files, 2026-10-17)
@@ -123,7 +126,8 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
 ## Known limits
 - The free camera and the `--fps-move-shoot` hero collide with terrain only (not units/buildings/resources); a possessed unit and the
   order-driven FPS hero collide like any StarCraft unit.
-- Faces read the solid cell's HD art inward from the face, a stand-in until M3 maps each cliff band onto its face; the tops of cliff
+- Faces read the solid side's HD art inward (along the normal snapped to the iso directions), a stand-in until M3 maps each cliff
+  band onto its face; wall corners are rounded (the contour is smoothed over 6 cells); the tops of cliff
   bands show the band's (face) art. Creep effects and water animation are not drawn; the map edge fades to fog.
 - Walkability and height levels are read once per map load; creep-induced changes during play are not tracked.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).

@@ -207,10 +207,15 @@ private:
 		auto row_at = [&](double d, double h) { return hz + (eh - h) * proj / std::max(d, 0.5); };
 		auto first_row = [](double r) { return (int)std::ceil(r - 0.5); }; // first pixel row whose centre is at or below r
 		int top = H_;
+		const double inv_maxd = 1.0 / maxd, fog_from = 0.4 * maxd, inv_fog = 1.0 / (0.6 * maxd);
 		auto put = [&](int sy, double d, double r, double g, double b) { // distance shading, then fog toward the horizon colour
-			double shade = 1.0 - 0.4 * std::min(1.0, d / maxd), f = std::max(0.0, std::min(1.0, (d - 0.4 * maxd) / (0.6 * maxd)));
+			double shade = 1.0 - 0.4 * std::min(1.0, d * inv_maxd);
 			size_t i = (size_t)sy * W_ + sx;
-			fb[i] = pack(r * shade * (1 - f) + kFog[0] * f, g * shade * (1 - f) + kFog[1] * f, b * shade * (1 - f) + kFog[2] * f);
+			if (d <= fog_from) fb[i] = pack(r * shade, g * shade, b * shade);
+			else {
+				double f = std::min(1.0, (d - fog_from) * inv_fog), k = shade * (1 - f);
+				fb[i] = pack(r * k + kFog[0] * f, g * k + kFog[1] * f, b * k + kFog[2] * f);
+			}
 			zbuf_[i] = (float)d;
 		};
 		// A cell's top between ray distances d0..d1, rising linearly h0 -> h1 (floors slope on ramps). Each row's distance
@@ -251,6 +256,8 @@ private:
 		// Draw cell (cx,cy) between ray parameters ta..tb (cell units); a split cell is two pieces with its wall between.
 		// Returns the drawn height where the ray leaves the cell.
 		auto span = [&](int cx, int cy, double ta, double tb) -> double {
+			const Terrain::Cell& cell = terrain_.at(cx, cy);
+			if (cell.flags & Terrain::flat) { surface(cell.h, cell.h, ta * kCell, tb * kCell); return cell.h; }
 			double ua = gx + rdx * ta - cx, va = gy + rdy * ta - cy, ub = gx + rdx * tb - cx, vb = gy + rdy * tb - cy;
 			const Terrain::Split* sp = terrain_.split(cx, cy);
 			int sa = sp ? (sp->nx * ua + sp->ny * va > sp->c) : -1, sb = sp ? (sp->nx * ub + sp->ny * vb > sp->c) : -1;
@@ -276,7 +283,8 @@ private:
 			int pmx = mx, pmy = my;
 			if (sdx < sdy) { sdx += ddx; mx += stx; } else { sdy += ddy; my += sty; }
 			if (terrain_.at(mx, my).kind == Terrain::edge) break; // left the map
-			double h_entry = terrain_.side_at(mx, my, gx + rdx * t_out - mx, gy + rdy * t_out - my).h;
+			const Terrain::Cell& nc = terrain_.at(mx, my);
+			double h_entry = (nc.flags & Terrain::flat) ? nc.h : terrain_.side_at(mx, my, gx + rdx * t_out - mx, gy + rdy * t_out - my).h;
 			if (h_entry > h_exit) face(h_exit, h_entry, t_out * kCell, pmx - mx, pmy - my);
 			t_in = t_out;
 		}
@@ -323,9 +331,9 @@ private:
 		if (d.sp && (d.frame < 0 || d.frame >= (int)d.sp->frames.size())) d.sp = nullptr;
 		double base = v.horizon + (v.eye_h - terrain_.floor_height(un.x, un.y)) * v.proj / depth; // the floor the unit stands on
 		if (d.sp) {
-			// The art stands on the floor at the unit's position: the lowest frame bottom over all of the sprite's frames
-			// is the ground line, so no frame dips into the floor and animations do not bob. (The original renderer
-			// centres the box on the position; drawn upright, that sinks the lower half of the art into the floor.)
+			// The art stands on the floor at the unit's position: the sprite's median frame bottom is its ground line,
+			// the same for all frames so animations do not bob. (The original renderer centres the box on the
+			// position; drawn upright, that sinks the lower half of the art into the floor.)
 			const auto& fr = d.sp->frames[d.frame];
 			const double sf = 0.25; // HD pixels are 4x SD
 			double cx = (fr.xoff + fr.w / 2.0 - d.sp->box_w / 2.0) * sf; // horizontal anchor offset (world px)
