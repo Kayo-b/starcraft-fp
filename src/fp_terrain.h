@@ -15,7 +15,8 @@
 // Cliffs (M3): StarCraft paints a cliff's face onto the map as the band between its foot and its top. On natural
 // tilesets the band becomes a slope rising from the foot to the top, and the map art draped on it is the face (the
 // approach of Titan Reactor's terrain generator); on artificial ones (Space Platform, Installation), whose cliffs are
-// metal walls, the band stays a block with a vertical face onto which the renderer maps the band's art.
+// metal walls, the band stays a block with a vertical face onto which the renderer maps the band's art. Obstacles follow
+// the same split: draped mounds on natural tilesets, blocks on artificial ones.
 //
 // Shape (what the renderer draws, build_shape): floors are one continuous surface, with heights at cell corners (the mean
 // of the floor cells sharing the corner) interpolated inside each cell, so ramps are smooth slopes rather than steps.
@@ -46,6 +47,7 @@ struct Terrain {
 	static constexpr int kBand = 16;      // deepest cliff band seen in the survey (minitiles)
 	static constexpr int kRamp = 12;      // half-length of a ramp blend (minitiles): a level's rise at ~30 degrees
 	static constexpr double kObstacle = 32, kObstacleHigh = 72; // obstacle tops above their level (px; vf4 "very high" bit: high)
+	static constexpr int kMound = 3;      // draped obstacles reach their full height this many cells in from their edge
 	double level_h = 112;                 // px per level (a prototype choice; RenderParams::level_h explains it)
 	bool drape = true;                    // cliffs as draped slopes (natural tilesets) or blocks with faces (artificial)
 
@@ -61,9 +63,9 @@ struct Terrain {
 	std::vector<int32_t> split_of; // per cell: index into splits, or -1
 	std::vector<Split> splits;
 	// Blocks (walls) and surfaces (drawn sloped from corner heights): draped cliffs are surfaces, block cliffs are walls.
-	bool is_solid(uint8_t k) const { return k == obstacle || (k == cliff && !drape); }
-	bool is_surface(uint8_t k) const { return k == floor || (k == cliff && drape); }
-	// Space Platform and Installation: cliffs are built walls, kept as blocks.
+	bool is_solid(uint8_t k) const { return (k == obstacle || k == cliff) && !drape; }
+	bool is_surface(uint8_t k) const { return k == floor || ((k == cliff || k == obstacle) && drape); }
+	// Space Platform and Installation: cliffs and obstacles are built walls, kept as blocks.
 	static bool drapes_cliffs(size_t tileset) { return tileset != 1 && tileset != 2; }
 
 	const Split* split(int cx, int cy) const {
@@ -230,12 +232,31 @@ struct Terrain {
 			c.h = (float)((c.level + (other[i] - (int)c.level) * t) * level_h);
 			c.flags |= ramp;
 		}
-		// obstacles stand above the highest floor beside them (ramps can rise past their level)
+		// Obstacles stand above the highest floor beside them (ramps can rise past their level). Draped ones (natural
+		// tilesets) are mounds: they rise from their edge to full height kMound cells in, the art draped over them.
 		for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
 			Cell& c = cells[idx(x, y)]; if (c.kind != obstacle) continue;
-			double base = c.level * level_h;
+			double base = c.level * level_h, top = (c.flags & very_high) ? kObstacleHigh : kObstacle;
 			for (int k = 0; k < 4; ++k) { int nx = x + dx[k], ny = y + dy[k]; if (nx >= 0 && ny >= 0 && nx < w && ny < h && cells[idx(nx, ny)].kind == floor) base = std::max(base, (double)cells[idx(nx, ny)].h); }
-			c.h = (float)(base + ((c.flags & very_high) ? kObstacleHigh : kObstacle));
+			if (drape) { int d = std::min({(int)near[0][idx(x, y)], (int)near[1][idx(x, y)], (int)near[2][idx(x, y)]}); top *= std::min(1.0, d / (double)kMound); }
+			c.h = (float)(base + top);
+		}
+		if (drape) { // smooth the mounds over neighbouring obstacle cells: a thin rim alternates 1- and 2-cell widths along a diagonal
+			std::vector<float> tmp((size_t)w * h);
+			for (int pass = 0; pass < 2; ++pass) {
+				for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+					const Cell& c = cells[idx(x, y)]; tmp[idx(x, y)] = c.h; if (c.kind != obstacle) continue;
+					double sum = 0; int n = 0;
+					for (int yy = std::max(0, y - 1); yy <= std::min(h - 1, y + 1); ++yy) for (int xx = std::max(0, x - 1); xx <= std::min(w - 1, x + 1); ++xx)
+						if (cells[idx(xx, yy)].kind == obstacle) { sum += cells[idx(xx, yy)].h; ++n; }
+					tmp[idx(x, y)] = (float)(sum / n);
+				}
+				for (size_t i = 0; i < cells.size(); ++i) cells[i].h = tmp[i];
+			}
+			for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) { // never below the floor beside them
+				Cell& c = cells[idx(x, y)]; if (c.kind != obstacle) continue;
+				for (int k = 0; k < 4; ++k) { int nx = x + dx[k], ny = y + dy[k]; if (nx >= 0 && ny >= 0 && nx < w && ny < h && cells[idx(nx, ny)].kind == floor) c.h = std::max(c.h, cells[idx(nx, ny)].h); }
+			}
 		}
 		build_shape();
 	}

@@ -98,7 +98,8 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   floors are one continuous surface (heights at cell corners), so ramps are smooth slopes. StarCraft paints a cliff's face onto the
   map as the band between its foot and its top: on natural tilesets that band becomes a slope from foot to top with the map art draped
   on it (Titan Reactor's approach); on Space Platform and Installation it stays a block whose vertical face carries the band's art.
-  Obstacles stand 32 px (72 with vf4's "very high" bit) above the floor beside them; water lies just below its shore, the space
+  Obstacles stand 32 px (72 with vf4's "very high" bit) above the floor beside them, as draped mounds on natural tilesets and blocks
+  on artificial ones; water lies just below its shore, the space
   platform's void far below. Walls follow the isometric grid's 2:1 edges (the solid/open field is smoothed and contoured, a boundary
   cell holds the straight line through it) instead of 8 px staircases.
 - Renderer: each screen column marches its ray through the heightfield front to back, drawing a cell's top where it is below the eye
@@ -129,7 +130,7 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
 ## Known limits
 - The free camera and the `--fps-move-shoot` hero collide with terrain only (not units/buildings/resources); a possessed unit and the
   order-driven FPS hero collide like any StarCraft unit.
-- Block faces (obstacles, artificial cliffs) read their art inward from the face; doodads are plain blocks until M5. Creep effects and water animation are not drawn. Beyond the map edge the world continues as a darkened mirror image of the map,
+- Block faces (artificial tilesets) read their art inward from the face; doodads are mounds or blocks until M5 stands them up. Creep effects and water animation are not drawn. Beyond the map edge the world continues as a darkened mirror image of the map,
   then a plain ground plane (scenery only: nothing can go there).
 - Walkability and height levels are read once per map load; creep-induced changes during play are not tracked.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).

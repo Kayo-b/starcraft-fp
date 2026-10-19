@@ -33,6 +33,8 @@ int main(int argc, char** argv) {
 					for (int k = 0; k < 4; ++k) { const Terrain::Cell& n = t.at(x + dx[k], y + dy[k]); if (n.kind != Terrain::water && n.kind != Terrain::space && n.kind != Terrain::edge && n.h <= c.h) ++liquid_high; }
 				if (c.kind != Terrain::floor) {
 					if (c.kind == Terrain::cliff) for (int k = 0; k < 4; ++k) { const Terrain::Cell& n = t.at(x + dx[k], y + dy[k]); if (n.kind == Terrain::floor && n.level > c.level) ++cliff_low; }
+					if (c.kind == Terrain::obstacle && t.drape) // a mound above the floor beside it
+						for (int k = 0; k < 4; ++k) { const Terrain::Cell& n = t.at(x + dx[k], y + dy[k]); if (n.kind == Terrain::floor && n.h > c.h) ++drape_range; }
 					if (c.kind == Terrain::cliff && t.drape) { // a slope between ground and its top level, meeting the floor without a wall
 						if (c.h < 0 || c.h > c.level * L) ++drape_range;
 						for (int k = 0; k < 4; ++k) { const Terrain::Cell& n = t.at(x + dx[k], y + dy[k]); if (n.kind == Terrain::floor && std::abs(n.h - c.h) > 0.5 * L + 1) ++drape_wall; }
@@ -56,7 +58,7 @@ int main(int argc, char** argv) {
 			check(liquid_high == 0, "water and void lie below the ground around them (" + std::to_string(liquid_high) + " edges do not)");
 			check(sink == 0, "no solid block sinks below the floor next to it (" + std::to_string(sink) + " do)");
 			if (t.drape) {
-				check(drape_range == 0, "draped cliffs lie between the ground and their top level (" + std::to_string(drape_range) + " do not)");
+				check(drape_range == 0, "draped cliffs lie between the ground and their top level, draped obstacles above the floor beside them (" + std::to_string(drape_range) + " do not)");
 				check(drape_wall == 0, "draped cliffs meet the floor without a wall, half a level at most (" + std::to_string(drape_wall) + " steps)");
 			}
 			check(step == 0, "walkable neighbours never jump more than 0.6 level (ramps are slopes; " + std::to_string(step) + " jumps)");
