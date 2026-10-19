@@ -128,7 +128,8 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   order-driven FPS hero collide like any StarCraft unit.
 - Faces read the solid side's HD art inward (along the normal snapped to the iso directions), a stand-in until M3 maps each cliff
   band onto its face; wall corners are rounded (the contour is smoothed over 6 cells); the tops of cliff
-  bands show the band's (face) art. Creep effects and water animation are not drawn; the map edge fades to fog.
+  bands show the band's (face) art. Creep effects and water animation are not drawn. Beyond the map edge the world continues as a darkened mirror image of the map,
+  then a plain ground plane (scenery only: nothing can go there).
 - Walkability and height levels are read once per map load; creep-induced changes during play are not tracked.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).
 - Only the main image of each sprite is drawn (no shadows/overlays).
