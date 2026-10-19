@@ -73,6 +73,8 @@ struct AnimSprite {
 	struct Frame { int x, y, xoff, yoff, w, h; };
 	std::vector<uint8_t> raw; std::vector<Frame> frames;
 	size_t diffuse = 0, teamcolor_off = 0; int tex_w = 0, tex_h = 0, box_w = 0, box_h = 0; bool ok = false;
+	int ground = 0; // where the art meets the floor (box rows): the median frame bottom, so a few outlier frames
+	                // (attacks, deaths) dipping lower do not lift every other frame off the floor
 	static unsigned u16(const std::vector<uint8_t>& b, size_t o) { return b[o] | (b[o + 1] << 8); }
 	static uint32_t u32(const std::vector<uint8_t>& b, size_t o) { return b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | ((uint32_t)b[o + 3] << 24); }
 	bool load(std::vector<uint8_t> data) {
@@ -97,6 +99,8 @@ struct AnimSprite {
 		}
 		for (unsigned i = 0; i < nf; ++i) { size_t o = ft + i * 16;
 			frames.push_back({(int)u16(raw, o), (int)u16(raw, o + 2), (int16_t)u16(raw, o + 4), (int16_t)u16(raw, o + 6), (int)u16(raw, o + 8), (int)u16(raw, o + 10)}); }
+		std::vector<int> bottoms; for (auto& f : frames) bottoms.push_back(f.yoff + f.h);
+		std::nth_element(bottoms.begin(), bottoms.begin() + bottoms.size() / 2, bottoms.end()); ground = bottoms[bottoms.size() / 2];
 		return ok = true;
 	}
 	bool has_teamcolor() const { return teamcolor_off != 0; }
