@@ -183,6 +183,13 @@ private:
 	static uint32_t pack(double r, double g, double b) { return 0xFF000000u | ((uint32_t)std::min(255.0, r) << 16) | ((uint32_t)std::min(255.0, g) << 8) | (uint32_t)std::min(255.0, b); }
 
 	static constexpr float kFar = 1e30f; // depth of sky and fog pixels
+	// The nearest of the isometric grid's normals: the axes and the normals of its 2:1 diagonals.
+	static void iso_snap(double nx, double ny, double& sx, double& sy) {
+		static const double k = 1 / 2.2360679774997896;
+		static const double dirs[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {k, 2 * k}, {-k, 2 * k}, {k, -2 * k}, {-k, -2 * k}};
+		double best = -2; sx = nx; sy = ny;
+		for (auto& d : dirs) { double dot = d[0] * nx + d[1] * ny; if (dot > best) { best = dot; sx = d[0]; sy = d[1]; } }
+	}
 	float depth_at(int x, int y) const { x = std::max(0, std::min(W_ - 1, x)); y = std::max(0, std::min(H_ - 1, y)); return zbuf_[(size_t)y * W_ + x]; }
 
 	// One screen column: march the ray through the heightfield front to back. A cell's top is drawn where it lies below
@@ -206,45 +213,72 @@ private:
 			fb[i] = pack(r * shade * (1 - f) + kFog[0] * f, g * shade * (1 - f) + kFog[1] * f, b * shade * (1 - f) + kFog[2] * f);
 			zbuf_[i] = (float)d;
 		};
-		auto surface = [&](double h, double d0, double d1) { // top of a cell between ray distances d0..d1
-			if (h >= eh) return; // seen from below: hidden behind its own face
-			int r0 = std::max(0, first_row(row_at(d1, h))), r1 = std::min(top, first_row(row_at(d0, h)));
+		// A cell's top between ray distances d0..d1, rising linearly h0 -> h1 (floors slope on ramps). Each row's distance
+		// is solved exactly on that line; seen from behind (farther points lower on screen) it is not drawn.
+		auto surface = [&](double h0, double h1, double d0, double d1) {
+			d0 = std::max(d0, 0.5); if (d1 <= d0) return;
+			double ra = row_at(d0, h0), rb = row_at(d1, h1);
+			if (rb >= ra) return;
+			double k = (h1 - h0) / (d1 - d0);
+			int r0 = std::max(0, first_row(rb)), r1 = std::min(top, first_row(ra));
 			for (int sy = r0; sy < r1; ++sy) {
-				double d = std::max(d0, std::min(d1, (eh - h) * proj / (sy + 0.5 - hz)));
+				double den = sy + 0.5 - hz + k * proj; if (den <= 1e-9) continue;
+				double d = std::max(d0, std::min(d1, (eh - h0 + k * d0) * proj / den));
 				uint8_t t[3]; tile_sample(cam.x + rdx * d, cam.y + rdy * d, t);
 				put(sy, d, t[0], t[1], t[2]);
 			}
 			if (r0 < r1) top = r0;
 		};
-		auto face = [&](double h0, double h1, double d, int side, int inx, int iny) { // a cell's front face, rising h0 -> h1
+		// A face rising h0 -> h1 at distance d; (nx, ny) is its outward normal (toward the camera).
+		auto face = [&](double h0, double h1, double d, double nx, double ny) {
 			double rt = row_at(d, h1), rb = row_at(d, h0);
 			int r0 = std::max(0, first_row(rt)), r1 = std::min(top, first_row(rb));
 			if (r0 >= r1) return;
-			double hx = cam.x + rdx * d, hy = cam.y + rdy * d;
+			double hx = cam.x + rdx * d, hy = cam.y + rdy * d, light = 0.8 + 0.2 * ny + 0.05 * nx; // the art is lit for south-facing faces
+			double snx, sny; iso_snap(nx, ny, snx, sny);
 			for (int sy = r0; sy < r1; ++sy) {
 				double hp = h0 + (h1 - h0) * (rb - (sy + 0.5)) / std::max(1e-6, rb - rt); // terrain height at this pixel
-				// Stand-in until M3 maps the cliff band: the face's art is the solid cell's art read inward, deeper for
-				// higher points (StarCraft draws a cliff's face onto the ground north of its foot).
+				// Stand-in until M3 maps the cliff band: the face's art is the solid side's art read inward, deeper for
+				// higher points (StarCraft draws a cliff's face onto the ground beside its foot). Inward is the face normal
+				// snapped to the isometric directions, so every cell along a straight wall reads the art the same way.
 				double into = (hp - h0) + 0.5;
-				uint8_t t[3]; tile_sample(hx + inx * into, hy + iny * into, t, true);
-				double k = (0.62 + 0.38 * (hp - h0) / std::max(1e-6, h1 - h0)) * (side ? 0.78 : 1.0); // darker at the foot; side light
+				uint8_t t[3]; tile_sample(hx - snx * into, hy - sny * into, t, true);
+				double k = (0.62 + 0.38 * (hp - h0) / std::max(1e-6, h1 - h0)) * light; // darker at the foot
 				put(sy, d, t[0] * k, t[1] * k, t[2] * k);
 			}
 			top = r0;
 		};
-		const Terrain::Cell* c = &terrain_.at(mx, my);
-		double d_in = 0;
+		// Draw cell (cx,cy) between ray parameters ta..tb (cell units); a split cell is two pieces with its wall between.
+		// Returns the drawn height where the ray leaves the cell.
+		auto span = [&](int cx, int cy, double ta, double tb) -> double {
+			double ua = gx + rdx * ta - cx, va = gy + rdy * ta - cy, ub = gx + rdx * tb - cx, vb = gy + rdy * tb - cy;
+			const Terrain::Split* sp = terrain_.split(cx, cy);
+			int sa = sp ? (sp->nx * ua + sp->ny * va > sp->c) : -1, sb = sp ? (sp->nx * ub + sp->ny * vb > sp->c) : -1;
+			if (sa == sb) {
+				double h0 = terrain_.side_value(cx, cy, ua, va, sa).h, h1 = terrain_.side_value(cx, cy, ub, vb, sa).h;
+				surface(h0, h1, ta * kCell, tb * kCell);
+				return h1;
+			}
+			double fa = sp->nx * ua + sp->ny * va - sp->c, fb = sp->nx * ub + sp->ny * vb - sp->c;
+			double th = ta + (tb - ta) * fa / (fa - fb), uh = gx + rdx * th - cx, vh = gy + rdy * th - cy;
+			double a0 = terrain_.side_value(cx, cy, ua, va, sa).h, a1 = terrain_.side_value(cx, cy, uh, vh, sa).h;
+			double b0 = terrain_.side_value(cx, cy, uh, vh, sb).h, b1 = terrain_.side_value(cx, cy, ub, vb, sb).h;
+			surface(a0, a1, ta * kCell, th * kCell);
+			if (b0 > a1) { double s = sa == 1 ? 1 : -1; face(a1, b0, th * kCell, s * sp->nx, s * sp->ny); } // normal toward the side we came from
+			surface(b0, b1, th * kCell, tb * kCell);
+			return b1;
+		};
+		double t_in = 0;
 		for (int step = 0; step < 16384 && top > 0; ++step) {
-			double d_out = std::min(sdx, sdy) * kCell;
-			surface(c->h, d_in, std::min(d_out, maxd));
-			if (d_out >= maxd) break;
-			int pmx = mx, pmy = my, side;
-			if (sdx < sdy) { sdx += ddx; mx += stx; side = 0; } else { sdy += ddy; my += sty; side = 1; }
-			const Terrain::Cell* n = &terrain_.at(mx, my);
-			if (n->kind == Terrain::edge) break; // left the map
-			d_in = d_out;
-			if (n->h > c->h) face(c->h, n->h, d_in, side, mx - pmx, my - pmy);
-			c = n;
+			double t_out = std::min(sdx, sdy);
+			double h_exit = span(mx, my, t_in, std::min(t_out, maxd / kCell));
+			if (t_out * kCell >= maxd) break;
+			int pmx = mx, pmy = my;
+			if (sdx < sdy) { sdx += ddx; mx += stx; } else { sdy += ddy; my += sty; }
+			if (terrain_.at(mx, my).kind == Terrain::edge) break; // left the map
+			double h_entry = terrain_.side_at(mx, my, gx + rdx * t_out - mx, gy + rdy * t_out - my).h;
+			if (h_entry > h_exit) face(h_exit, h_entry, t_out * kCell, pmx - mx, pmy - my);
+			t_in = t_out;
 		}
 		// rows nothing covered: sky above the horizon, fog below it (beyond the view distance or the map edge)
 		for (int sy = 0; sy < top; ++sy) {
@@ -289,12 +323,13 @@ private:
 		if (d.sp && (d.frame < 0 || d.frame >= (int)d.sp->frames.size())) d.sp = nullptr;
 		double base = v.horizon + (v.eye_h - terrain_.floor_height(un.x, un.y)) * v.proj / depth; // the floor the unit stands on
 		if (d.sp) {
-			// The unit position anchors the CENTER of the sprite box (same convention as the community renderers):
-			// a frame at (xoff,yoff) spans below the anchor, so most of the art sits lower than a bottom-aligned billboard.
+			// The art stands on the floor at the unit's position: the lowest frame bottom over all of the sprite's frames
+			// is the ground line, so no frame dips into the floor and animations do not bob. (The original renderer
+			// centres the box on the position; drawn upright, that sinks the lower half of the art into the floor.)
 			const auto& fr = d.sp->frames[d.frame];
 			const double sf = 0.25; // HD pixels are 4x SD
 			double cx = (fr.xoff + fr.w / 2.0 - d.sp->box_w / 2.0) * sf; // horizontal anchor offset (world px)
-			double top = (fr.yoff - d.sp->box_h / 2.0) * sf;             // frame top relative to ground (negative = above)
+			double top = (fr.yoff - d.sp->ground) * sf;                  // frame top relative to the ground (negative = above)
 			double bot = top + fr.h * sf;                                // frame bottom relative to ground
 			d.wpx = fr.w * sf * v.proj / depth; d.hpx = fr.h * sf * v.proj / depth;
 			d.x0 = (int)(sxc + cx * v.proj / depth - d.wpx / 2);
