@@ -37,6 +37,7 @@
 using namespace fp;
 using Clock = std::chrono::steady_clock;
 
+
 struct Args {
 	std::string data, input, game_map, screenshot, weapons, models; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false, model_units = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
@@ -483,7 +484,7 @@ int main(int argc, char** argv) {
 				if (a.selftest_input && ((e.type == SDL_MOUSEMOTION && e.motion.windowID != 0) || (e.type == SDL_MOUSEBUTTONDOWN && e.button.windowID != 0) || ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && e.key.windowID != 0))) continue;
 				const bool input_ok = captured || a.selftest_input;
 				if (e.type == SDL_QUIT) run = false;
-				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-a.rh / 3.0, std::min(a.rh / 3.0, v.cam.pitch - e.motion.yrel * 0.8)); }
+				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-kMaxPitch * a.rh, std::min(kMaxPitch * a.rh, v.cam.pitch - e.motion.yrel * 0.8)); }
 				else if (e.type == SDL_MOUSEBUTTONUP && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = false; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && s.fps->direct() && e.button.button == SDL_BUTTON_RIGHT) {

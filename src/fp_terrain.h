@@ -36,16 +36,21 @@ namespace fp {
 using namespace bwgame;
 
 struct Terrain {
-	enum Kind : uint8_t { floor, cliff, obstacle, water, space, edge };
+	enum Kind : uint8_t { floor, cliff, obstacle, water, space, edge, apron }; // apron: the low, flat rest of a block cliff's band
 	enum Flags : uint8_t { ramp = 1, doodad = 2, very_high = 4, flat = 8 }; // flat: drawn as one level top (no split, no slope)
 	struct Cell {
 		uint8_t kind = edge, level = 0, flags = 0, type = 0; // level: floor level, or the top level of a cliff
-		uint8_t band = 0, pad[3] = {0, 0, 0};                // cliffs: cells from here to the floor at the top (explicit padding: cells compare bytewise)
+		uint8_t band = 0, pad[3] = {0, 0, 0};                // cliffs: the band's depth in cells, foot to top (explicit padding: cells compare bytewise)
 		float h = 0;                                         // top surface height in px above level-0 ground
 	};
 	static constexpr double kCell = 8.0;  // minitile size in pixels
 	static constexpr int kBand = 16;      // deepest cliff band seen in the survey (minitiles)
-	static constexpr int kRamp = 12;      // half-length of a ramp blend (minitiles): a level's rise at ~30 degrees
+	static constexpr int kRamp = 20;      // half-length of a ramp blend (minitiles): a level's rise at ~20 degrees
+	// The drop is at the walkable edge, so a unit on top can look down over it: a draped cliff falls three quarters of
+	// its height within kDrop cells of the walkable edge and runs out as an apron to its foot; a block cliff's whole band
+	// is apron at the foot's level, its wall standing at the walkable edge above.
+	static constexpr int kDrop = 3;
+	static constexpr double kSmoothLevels = 0.4; // surfaces closer than this (in levels) join smoothly at shared corners
 	static constexpr double kObstacle = 32, kObstacleHigh = 72; // obstacle tops above their level (px; vf4 "very high" bit: high)
 	static constexpr int kMound = 3;      // draped obstacles reach their full height this many cells in from their edge
 	double level_h = 112;                 // px per level (a prototype choice; RenderParams::level_h explains it)
@@ -56,15 +61,14 @@ struct Terrain {
 
 	// A straight wall through a cell: points p (cell units, 0..1 inside the cell) with nx*u + ny*v > c are side 1 (solid),
 	// the others side 0 (open); kind and height of each side. (nx, ny) has unit length and points into the solid side.
-	struct Split { float nx, ny, c; uint8_t kind[2]; float h[2]; uint8_t band; }; // band: of the solid side (cliffs)
+	struct Split { float nx, ny, c; uint8_t kind[2]; float h[2]; uint8_t band; }; // band: the cliff band's depth when the wall is a cliff's
 	struct Side { uint8_t kind; float h; };
-	std::vector<float> corner_h;   // (w+1)*(h+1) floor heights at cell corners; NaN where no floor cell touches the corner
 	std::vector<std::array<float, 4>> corners; // per cell: its corner heights resolved (NaN -> the cell's own height), for the renderer
 	std::vector<int32_t> split_of; // per cell: index into splits, or -1
 	std::vector<Split> splits;
 	// Blocks (walls) and surfaces (drawn sloped from corner heights): draped cliffs are surfaces, block cliffs are walls.
 	bool is_solid(uint8_t k) const { return (k == obstacle || k == cliff) && !drape; }
-	bool is_surface(uint8_t k) const { return k == floor || ((k == cliff || k == obstacle) && drape); }
+	bool is_surface(uint8_t k) const { return k == floor || k == apron || ((k == cliff || k == obstacle) && drape); }
 	// Space Platform and Installation: cliffs and obstacles are built walls, kept as blocks.
 	static bool drapes_cliffs(size_t tileset) { return tileset != 1 && tileset != 2; }
 
@@ -80,10 +84,21 @@ struct Terrain {
 	}
 	// Floor height inside cell (cx,cy) at (u,v) from its corners; corners without floor take `fallback`.
 	double floor_at(int cx, int cy, double u, double v, double fallback) const {
-		if (cx < 0 || cy < 0 || cx >= w || cy >= h || corner_h.empty()) return fallback;
-		auto ch = [&](int X, int Y) { float f = corner_h[(size_t)Y * (w + 1) + X]; return std::isnan(f) ? fallback : (double)f; };
-		double a = ch(cx, cy) + (ch(cx + 1, cy) - ch(cx, cy)) * u, b = ch(cx, cy + 1) + (ch(cx + 1, cy + 1) - ch(cx, cy + 1)) * u;
+		if (cx < 0 || cy < 0 || cx >= w || cy >= h) return fallback;
+		double c00 = corner_value(cx, cy, fallback), c10 = corner_value(cx + 1, cy, fallback), c01 = corner_value(cx, cy + 1, fallback), c11 = corner_value(cx + 1, cy + 1, fallback);
+		double a = c00 + (c10 - c00) * u, b = c01 + (c11 - c01) * u;
 		return a + (b - a) * v;
+	}
+	// A surface's height at grid corner (X,Y), seen from a surface at height `ref`: the mean of the surface cells sharing the
+	// corner whose heights are within kSmoothLevels of ref. A drop between levels stays a drop: an apron and the plateau a
+	// level above it, or a cliff's steep part, never average into a twisted sheet.
+	double corner_value(int X, int Y, double ref) const {
+		double sum = 0; int n = 0; const double tol = kSmoothLevels * level_h;
+		for (int dy = -1; dy <= 0; ++dy) for (int dx = -1; dx <= 0; ++dx) {
+			const Cell& c = at(X + dx, Y + dy);
+			if (is_surface(c.kind) && std::fabs(c.h - ref) <= tol) { sum += c.h; ++n; }
+		}
+		return n ? sum / n : ref;
 	}
 	// One side of a split (or the whole cell when side < 0) at (u,v): its kind and drawn height (floors slope).
 	Side side_value(int cx, int cy, double u, double v, int side) const {
@@ -187,12 +202,13 @@ struct Terrain {
 				if (d < nearest_d) { nearest_d = d; nearest = l; }
 			}
 			if (n_levels >= 2) {
-				c.kind = cliff; c.level = (uint8_t)top; c.band = (uint8_t)std::min<int>(255, near[top][idx(x, y)]);
-				if (drape) { // rise from the foot (the lowest level within the band) to the top, by distance to each
-					int lo = 0; while (lo < top && near[lo][idx(x, y)] > kBand) ++lo;
-					double dl = near[lo][idx(x, y)], dh = near[top][idx(x, y)];
-					c.h = (float)((lo + (top - lo) * dl / (dl + dh)) * level_h);
-				} else c.h = (float)(top * level_h);
+				int lo = 0; while (lo < top && near[lo][idx(x, y)] > kBand) ++lo; // the foot: the lowest level within the band
+				double dl = near[lo][idx(x, y)], dh = near[top][idx(x, y)];
+				c.kind = cliff; c.level = (uint8_t)top; c.band = (uint8_t)std::min<double>(255, dl + dh);
+				if (drape) { // a steep drop right at the walkable edge, then an apron down to the foot
+					double t = dl / (dl + dh), drop = std::max(0.0, std::min(1.0, 1.0 - dh / kDrop));
+					c.h = (float)((lo + (top - lo) * (0.75 * drop + 0.25 * t)) * level_h);
+				} else { c.kind = apron; c.level = (uint8_t)lo; c.h = (float)(lo * level_h); }
 			}
 			else {
 				int l = top >= 0 ? top : nearest >= 0 ? nearest : 0;
@@ -263,17 +279,31 @@ struct Terrain {
 
 	void build_shape() {
 		auto idx = [&](int x, int y) { return (size_t)y * w + x; };
-		// surface heights at corners (floors, and draped cliffs)
-		corner_h.assign((size_t)(w + 1) * (h + 1), NAN);
-		for (int Y = 0; Y <= h; ++Y) for (int X = 0; X <= w; ++X) {
-			double sum = 0; int n = 0;
-			for (int dy = -1; dy <= 0; ++dy) for (int dx = -1; dx <= 0; ++dx) { const Cell& c = at(X + dx, Y + dy); if (is_surface(c.kind)) { sum += c.h; ++n; } }
-			if (n) corner_h[(size_t)Y * (w + 1) + X] = (float)(sum / n);
-		}
+		// surface heights at corners (floors, aprons, draped cliffs): per cell below, relative to its own height
 		// solidness smoothed at corners: binomial weights over the 6 cells on each axis around the corner (cells X-3..X+2),
 		// enough to straighten a 2x1 staircase; the map border repeats its cells
 		static const float k6[6] = {1 / 32.f, 5 / 32.f, 10 / 32.f, 10 / 32.f, 5 / 32.f, 1 / 32.f};
-		auto solid_c = [&](int x, int y) { x = std::max(0, std::min(w - 1, x)); y = std::max(0, std::min(h - 1, y)); return is_solid(cells[idx(x, y)].kind) ? 1.f : 0.f; };
+		// The high side of a wall: blocks, and (block-cliff tilesets) the ground within 4 cells of an apron lying a level
+		// or more below it, so the wall line follows the plateau's walkable edge.
+		std::vector<uint8_t> high((size_t)w * h, 0);
+		{
+			std::vector<uint8_t> dist((size_t)w * h, 255); std::deque<std::pair<int, int>> q;
+			for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+				if (is_solid(cells[idx(x, y)].kind)) high[idx(x, y)] = 1;
+				if (cells[idx(x, y)].kind == apron) { dist[idx(x, y)] = 0; q.push_back({x, y}); }
+			}
+			while (!q.empty()) {
+				auto [x, y] = q.front(); q.pop_front(); int d = dist[idx(x, y)]; if (d >= 4) continue;
+				const int dx[4] = {1, -1, 0, 0}, dy[4] = {0, 0, 1, -1};
+				for (int k = 0; k < 4; ++k) {
+					int nx = x + dx[k], ny = y + dy[k]; if (nx < 0 || ny < 0 || nx >= w || ny >= h || dist[idx(nx, ny)] <= d + 1) continue;
+					const Cell& n = cells[idx(nx, ny)]; const Cell& from = cells[idx(x, y)];
+					if (n.kind != floor || n.h < (from.kind == apron ? from.h : 0) + 0.5 * level_h) continue;
+					dist[idx(nx, ny)] = (uint8_t)(d + 1); high[idx(nx, ny)] = 1; q.push_back({nx, ny});
+				}
+			}
+		}
+		auto solid_c = [&](int x, int y) { x = std::max(0, std::min(w - 1, x)); y = std::max(0, std::min(h - 1, y)); return high[idx(x, y)] ? 1.f : 0.f; };
 		std::vector<float> rows((size_t)(w + 1) * h), S((size_t)(w + 1) * (h + 1));
 		for (int y = 0; y < h; ++y) for (int X = 0; X <= w; ++X) { float a = 0; for (int j = 0; j < 6; ++j) a += k6[j] * solid_c(X - 3 + j, y); rows[(size_t)y * (w + 1) + X] = a; }
 		for (int Y = 0; Y <= h; ++Y) for (int X = 0; X <= w; ++X) { float a = 0; for (int j = 0; j < 6; ++j) a += k6[j] * rows[(size_t)std::max(0, std::min(h - 1, Y - 3 + j)) * (w + 1) + X]; S[(size_t)Y * (w + 1) + X] = a; }
@@ -297,14 +327,14 @@ struct Terrain {
 			double qu = b00 ? 0 : b10 ? 1 : b01 ? 0 : 1, qv = b00 ? 0 : b10 ? 0 : b01 ? 1 : 1; // a solid corner
 			if (nx * qu + ny * qv < c) { nx = -nx; ny = -ny; c = -c; }
 			const Cell& self = cells[idx(x, y)];
-			bool own_solid = is_solid(self.kind);
+			bool own_solid = high[idx(x, y)] != 0;
 			if ((nx * 0.5 + ny * 0.5 > c) != own_solid) continue; // the contour would move the cell's centre: keep the cell
 			// the other side: the nearest neighbour of the other kind whose centre lies on that side of the line
 			int best = -1; double bd = 1e9;
 			for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
 				if (!dx && !dy) continue;
 				const Cell& nb = at(x + dx, y + dy);
-				if (nb.kind == edge || is_solid(nb.kind) == own_solid) continue;
+				if (nb.kind == edge || x + dx < 0 || y + dy < 0 || x + dx >= w || y + dy >= h || (high[idx(x + dx, y + dy)] != 0) == own_solid) continue;
 				double f = nx * (dx + 0.5) + ny * (dy + 0.5) - c;
 				if ((f > 0) != !own_solid) continue;
 				double d = std::fabs(f) + 0.01 * (std::abs(dx) + std::abs(dy)); // ties: prefer edge neighbours
@@ -312,7 +342,7 @@ struct Terrain {
 			}
 			if (best < 0) continue;
 			const Cell& other = cells[best];
-			Split sp{(float)nx, (float)ny, (float)c, {}, {}, own_solid ? self.band : other.band};
+			Split sp{(float)nx, (float)ny, (float)c, {}, {}, std::max(self.band, other.band)};
 			int so = own_solid ? 1 : 0;
 			sp.kind[so] = self.kind; sp.h[so] = self.h; sp.kind[1 - so] = other.kind; sp.h[1 - so] = other.h;
 			split_of[idx(x, y)] = (int32_t)splits.size(); splits.push_back(sp);
@@ -320,13 +350,12 @@ struct Terrain {
 		corners.assign((size_t)w * h, {0, 0, 0, 0});
 		for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
 			float own = cells[idx(x, y)].h; auto& q = corners[idx(x, y)];
-			for (int k = 0; k < 4; ++k) { float f = corner_h[(size_t)(y + k / 2) * (w + 1) + x + k % 2]; q[k] = std::isnan(f) ? own : f; }
+			for (int k = 0; k < 4; ++k) q[k] = (float)corner_value(x + k % 2, y + k / 2, own);
 		}
 		// flat cells: the renderer's fast path
 		for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
 			Cell& c = cells[idx(x, y)]; bool f = split_of[idx(x, y)] < 0;
-			if (f && is_surface(c.kind))
-				for (int dy = 0; dy <= 1 && f; ++dy) for (int dx = 0; dx <= 1; ++dx) { float ch = corner_h[(size_t)(y + dy) * (w + 1) + x + dx]; if (!std::isnan(ch) && ch != c.h) { f = false; break; } }
+			if (f && is_surface(c.kind)) for (int k = 0; k < 4; ++k) if (corners[idx(x, y)][k] != c.h) { f = false; break; }
 			if (f) c.flags |= flat; else c.flags &= ~flat;
 		}
 	}

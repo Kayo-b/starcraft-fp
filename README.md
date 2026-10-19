@@ -47,7 +47,7 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
   move orders), T train worker, Y train combat unit, B build supply at the crosshair (Terran/Protoss workers only), X stop.
 
 ### Common controls and options
-- Mouse look; WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; M cycle 3D models; P pause; `=`/`-` sim speed
+- Mouse look (about 64 degrees up and down, enough to aim down a cliff or up at its edge); WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; M cycle 3D models; P pause; `=`/`-` sim speed
   (x0.125..x16); R restart; ESC release/capture the mouse; F12 screenshot (`fp_shot_NNN.ppm` in the working directory); Q quit.
 - `--race R` / `--enemy R` (terran, protoss, zerg; default terran vs protoss), `--res WxH` render resolution (default 640x400),
   `--window WxH` (default 1280x800), `--fullscreen`, `--sim-speed X` starting sim speed (0.125..16), `--no-capture` leaves your
@@ -104,8 +104,10 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   `fp_view --models DIR --model FILE --model-at X,Y,YAW` places any model in a view.
 - Terrain: a heightfield of minitiles (8 px, `src/fp_terrain.h`). Walkable cells sit at their StarCraft level (low/mid/high, 112 px apart);
   floors are one continuous surface (heights at cell corners), so ramps are smooth slopes. StarCraft paints a cliff's face onto the
-  map as the band between its foot and its top: on natural tilesets that band becomes a slope from foot to top with the map art draped
-  on it (Titan Reactor's approach); on Space Platform and Installation it stays a block whose vertical face carries the band's art.
+  map as the band between its foot and its top. The drop stands at the walkable edge, so units on top can look down over it: on natural
+  tilesets the band falls steeply right below the edge and runs out as an apron to its foot, the map art draped on it (Titan Reactor's
+  approach); on Space Platform and Installation the wall stands at the edge carrying the band's art, the band itself is apron at the
+  foot's level. Ramps are long slopes (~20 degrees).
   Obstacles stand 32 px (72 with vf4's "very high" bit) above the floor beside them, as draped mounds on natural tilesets and blocks
   on artificial ones; water lies just below its shore, the space
   platform's void far below. Walls follow the isometric grid's 2:1 edges (the solid/open field is smoothed and contoured, a boundary
