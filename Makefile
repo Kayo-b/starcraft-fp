@@ -2,10 +2,10 @@
 OPENBW_DIR ?= ../starcraft-data/openbw
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -w -I$(OPENBW_DIR) -Isrc
-HDRS := src/dir_loader.h src/fp_assets.h src/fp_terrain.h src/fp_render.h src/fp_game.h src/fp_fps.h src/fp_weapon.h
+HDRS := src/dir_loader.h src/fp_assets.h src/fp_terrain.h src/fp_m3.h src/fp_models.h src/fp_render.h src/fp_game.h src/fp_fps.h src/fp_weapon.h
 SDL_LIBS = $(shell pkg-config --cflags --libs sdl2 SDL2_ttf libpng vorbisfile)
 
-all: build/fp_view build/fp_play build/fp_gametest build/fp_fpstest build/fp_assettest build/fp_terraintest build/terrain_survey
+all: build/fp_view build/fp_play build/fp_gametest build/fp_fpstest build/fp_assettest build/fp_terraintest build/terrain_survey build/m3_probe
 
 build/fp_view: src/fp_view.cpp $(HDRS)
 	@mkdir -p build
@@ -26,6 +26,10 @@ build/fp_fpstest: src/fp_fpstest.cpp $(HDRS)
 build/fp_assettest: src/fp_assettest.cpp $(HDRS)
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $< -o $@ -pthread $(SDL_LIBS)
+
+build/m3_probe: tools/m3_probe.cpp src/fp_m3.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $< -o $@
 
 build/fp_terraintest: src/fp_terraintest.cpp $(HDRS)
 	@mkdir -p build
