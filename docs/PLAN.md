@@ -55,6 +55,9 @@ Status: `todo`, `doing`, `done`.
   mid ~80, high ~128); obstacles stand 32 px (72 with "very high") above the highest floor beside them; ramps blend
   over 12 cells each side (~30 degrees). Terrain 2.7 ms in the demo base view. The SD face path is unused (removal
   with M5). Back faces of block cliffs read their own (thin) band.
+  Play-check follow-up: obstacles on natural tilesets are draped mounds too (rising to full height 3 cells in from
+  their edge, smoothed over neighbouring obstacle cells, never below the floor beside them); the jungle canopy's
+  unwalkable rim was a flat 32 px wall.
 - **M4** `todo` All sprites as the original draws them: `sprites_on_tile_line` (units, bullets, explosions, deaths,
   doodad sprites), every image of a sprite, shadows as floor decals; flyers at altitude; smoothing and a size clamp up
   close (also the sprite fill cost: front-to-back without overdraw); buildings anchored on their footprint.
