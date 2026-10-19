@@ -6,6 +6,7 @@
 #include "replay.h"
 #include "fp_assets.h"
 #include "fp_terrain.h"
+#include "fp_models.h"
 #include <algorithm>
 #include <cmath>
 #include <thread>
@@ -26,6 +27,7 @@ struct UnitView {
 	int heading; bool directional; int frame_base;
 	const unit_t* ptr;
 	double hp_frac = 1, shield_frac = 0; // 0..1 of the unit type's maximum; shield_frac is 0 for units without shields
+	const M3Model* model = nullptr; double mscale = 0, myaw = 0; // drawn as this 3D model (px per model unit, yaw) instead of a sprite
 };
 
 // What to highlight on top of the scene.
@@ -103,7 +105,19 @@ public:
 			  if (mh > 0) b.hp_frac = std::max(0.0, std::min(1.0, (u->hp.raw_value / 256.0) / mh));
 			  if (u->unit_type->has_shield && ms > 0) b.shield_frac = std::max(0.0, std::min(1.0, (u->shield_points.raw_value / 256.0) / ms)); }
 			assets_.sprite((int)mi->image_type->id);
+			// Finished buildings and mineral fields with a model: scaled so its footprint covers the unit's (by area)
+			if (models_ && fn_.u_completed(u)) if (const M3Model* m = models_->for_unit(u->unit_type->id)) {
+				auto& b = units_.back(); double mw = std::max(0.1f, m->hi[0] - m->lo[0]), md = std::max(0.1f, m->hi[1] - m->lo[1]);
+				double pw = std::max(16, (int)u->unit_type->placement_size.x), ph = std::max(16, (int)u->unit_type->placement_size.y);
+				b.model = m; b.mscale = std::sqrt(pw * ph / (mw * md)); b.myaw = 0;
+			}
 		}
+	}
+	// 3D models (fp_models.h); without a library every unit is a sprite.
+	void set_models(ModelLibrary* m) { models_ = m; }
+	// A model placed in the world independently of the simulation (fp_view's model views): not pickable.
+	void add_static_model(const M3Model* m, double x, double y, double px_per_unit, double yaw_deg, int owner) {
+		if (m) statics_.push_back({m, x, y, px_per_unit, yaw_deg * 3.14159265358979323846 / 180.0, owner});
 	}
 
 	// Beyond the map edge the world continues as the map's mirror image (darkened by the renderer), so the ground does
@@ -127,12 +141,15 @@ public:
 	void render(const Camera& cam, const unit_t* hide, uint32_t* fb, const Overlay* ov = nullptr, unsigned threads = 0) {
 		View v = view(cam);
 		zbuf_.assign((size_t)W_ * H_, kFar);
+		idbuf_.assign((size_t)W_ * H_, -1);
 		std::vector<Vis> vis = visible(cam, hide, v);
 		std::sort(vis.begin(), vis.end(), [](const Vis& a, const Vis& b) { return a.depth > b.depth; });
+		prepare_models(cam, hide, v);
 
 		auto band = [&](int xa, int xb) {
 			for (int sx = xa; sx < xb; ++sx) column(cam, sx, v, fb);
-			for (auto& vi : vis) sprite(cam, units_[vi.idx], vi.depth, vi.sx, v, fb, xa, xb);
+			raster_models(v, fb, xa, xb);
+			for (auto& vi : vis) if (!units_[vi.idx].model) sprite(cam, units_[vi.idx], vi.depth, vi.sx, v, fb, xa, xb);
 		};
 		unsigned n = threads ? threads : std::max(1u, std::min(12u, std::thread::hardware_concurrency()));
 		if (n <= 1) { band(0, W_); }
@@ -156,7 +173,7 @@ public:
 		for (auto& vi : visible(cam, hide, v)) {
 			const UnitView& un = units_[vi.idx]; if (!want(un.ptr)) continue;
 			Draw d = geometry(cam, un, vi.depth, vi.sx, v);
-			if (vi.depth > depth_at((int)vi.sx, (d.y0 + d.y1) / 2)) continue; // its centre is behind terrain
+			if (vi.depth > depth_at((int)vi.sx, (d.y0 + d.y1) / 2) && id_at((int)vi.sx, (d.y0 + d.y1) / 2) != vi.idx) continue; // its centre is behind something else
 			double dx = vi.sx - W_ / 2.0, dy = (d.y0 + d.y1) / 2.0 - H_ / 2.0, dist = std::hypot(dx, dy);
 			if (dist < bd) { bd = dist; best = un.ptr; }
 		}
@@ -166,10 +183,12 @@ public:
 	// What the crosshair is on. Uses the depth buffer of the most recent render(), so call it right after render().
 	Pick pick_center(const Camera& cam, const unit_t* hide) const {
 		Pick pk; View v = view(cam); const int cx = W_ / 2, cy = H_ / 2;
+		const int model_id = id_at(cx, cy); // a model under the crosshair, unless a sprite stands in front of it (below)
 		std::vector<Vis> vis = visible(cam, hide, v);
 		std::sort(vis.begin(), vis.end(), [](const Vis& a, const Vis& b) { return a.depth < b.depth; }); // near -> far
 		for (auto& vi : vis) {
 			if (vi.depth > depth_at(cx, cy)) break; // everything further is behind the terrain at the crosshair
+			if (units_[vi.idx].model) continue; // models are picked by their pixels (above)
 			Draw d = geometry(cam, units_[vi.idx], vi.depth, vi.sx, v);
 			if (cx < d.x0 || cx >= d.x1 || cy < d.y0 || cy >= d.y1) continue;
 			if (d.sp) { // ignore transparent pixels so you cannot select through gaps in a sprite
@@ -181,9 +200,10 @@ public:
 			}
 			pk.unit = units_[vi.idx].ptr; break;
 		}
+		if (!pk.unit && model_id >= 0) pk.unit = units_[model_id].ptr;
 		// the terrain point under the crosshair (the centre column's ray is the view direction); floor only
 		double dc = depth_at(cx, cy);
-		if (dc < kFar) {
+		if (dc < kFar && id_at(cx, cy) == -1) {
 			double gx = cam.x + v.dirx * dc, gy = cam.y + v.diry * dc;
 			if (terrain_.walkable((int)std::floor(gx / kCell), (int)std::floor(gy / kCell))) { pk.ground = true; pk.gx = gx; pk.gy = gy; }
 		}
@@ -195,6 +215,135 @@ private:
 	struct Vis { double depth, sx; int idx; };
 	struct Draw { const AnimSprite* sp; int frame; bool flip; int x0, x1, y0, y1; double wpx, hpx; };
 	static uint32_t pack(double r, double g, double b) { return 0xFF000000u | ((uint32_t)std::min(255.0, r) << 16) | ((uint32_t)std::min(255.0, g) << 8) | (uint32_t)std::min(255.0, b); }
+
+	int id_at(int x, int y) const { if (idbuf_.empty()) return -1; x = std::max(0, std::min(W_ - 1, x)); y = std::max(0, std::min(H_ - 1, y)); return idbuf_[(size_t)y * W_ + x]; }
+
+	// Models: transform every drawn triangle to the screen once per frame (back faces culled, clipped at the near plane).
+	void prepare_models(const Camera& cam, const unit_t* hide, const View& v) {
+		tris_.clear();
+		struct Inst { const M3Model* m; double x, y, s, yaw; int id, owner; };
+		std::vector<Inst> inst;
+		for (size_t i = 0; i < units_.size(); ++i) if (units_[i].model && units_[i].ptr != hide) inst.push_back({units_[i].model, units_[i].x, units_[i].y, units_[i].mscale, units_[i].myaw, (int)i, units_[i].owner});
+		for (auto& sm : statics_) inst.push_back({sm.m, sm.x, sm.y, sm.scale, sm.yaw, -2, sm.owner});
+		// cull whole models behind the camera, beyond the view distance or outside the view
+		inst.erase(std::remove_if(inst.begin(), inst.end(), [&](const Inst& in) {
+			const M3Model& m = *in.m; double r = in.s * std::max({std::fabs(m.lo[0]), std::fabs(m.hi[0]), std::fabs(m.lo[1]), std::fabs(m.hi[1]), std::fabs(m.hi[2])}) * 1.5;
+			double dx = in.x - cam.x, dy = in.y - cam.y, depth = dx * v.dirx + dy * v.diry;
+			if (depth < -r || depth > p_.view_dist + r) return true;
+			double lat = -dx * v.diry + dy * v.dirx; return std::fabs(lat) > (depth + r) * (W_ / 2.0) / v.proj + r;
+		}), inst.end());
+		if (inst.empty()) return;
+		struct CV { double lat, up, depth, u, v, l; };
+		const double near = 2.0, L[3] = {-0.35, 0.55, 0.76}; // light from the south-west, above (map axes: x east, y south, up)
+		auto build = [&](const Inst& in, std::vector<CV>& cv, std::vector<STri>& out) {
+			const M3Model& m = *in.m; double cs = std::cos(in.yaw), sn = std::sin(in.yaw), ground = terrain_.floor_height(in.x, in.y), s = in.s;
+			cv.resize(m.verts.size());
+			for (size_t k = 0; k < m.verts.size(); ++k) { // each vertex once: to camera space
+				const M3Model::Vertex& p = m.verts[k];
+				double mx = p.x * s, my = -p.y * s; // SC2's y points north, the map's south
+				double wx = in.x + mx * cs - my * sn, wy = in.y + mx * sn + my * cs, wh = ground + p.z * s;
+				double nx = p.nx * cs + p.ny * sn, ny = p.nx * sn - p.ny * cs, nz = p.nz, nl = std::sqrt(nx * nx + ny * ny + nz * nz);
+				double dx = wx - cam.x, dy = wy - cam.y;
+				cv[k] = CV{-dx * v.diry + dy * v.dirx, wh - v.eye_h, dx * v.dirx + dy * v.diry, p.u, p.v, 0.55 + 0.6 * std::max(0.0, (nx * L[0] + ny * L[1] + nz * L[2]) / std::max(1e-6, nl))};
+			}
+			for (const M3Model::Batch& b : m.batches) {
+				const M3Texture* tex = b.tex >= 0 ? &m.tex[b.tex] : nullptr; const M3Texture* emis = b.emis >= 0 ? &m.tex[b.emis] : nullptr;
+				for (uint32_t i = b.first; i + 2 < b.first + b.count; i += 3) {
+					const CV* c[3] = {&cv[m.idx[i]], &cv[m.idx[i + 1]], &cv[m.idx[i + 2]]};
+					if (c[0]->depth < near && c[1]->depth < near && c[2]->depth < near) continue;
+					CV poly[4]; int n = 0;
+					if (c[0]->depth >= near && c[1]->depth >= near && c[2]->depth >= near) { poly[0] = *c[0]; poly[1] = *c[1]; poly[2] = *c[2]; n = 3; }
+					else for (int k = 0; k < 3; ++k) { // clip against the near plane (a triangle becomes up to a quad)
+						const CV& a = *c[k]; const CV& e = *c[(k + 1) % 3];
+						if (a.depth >= near) poly[n++] = a;
+						if ((a.depth >= near) != (e.depth >= near) && n < 4) {
+							double t = (near - a.depth) / (e.depth - a.depth);
+							poly[n++] = CV{a.lat + (e.lat - a.lat) * t, a.up + (e.up - a.up) * t, near, a.u + (e.u - a.u) * t, a.v + (e.v - a.v) * t, a.l + (e.l - a.l) * t};
+						}
+					}
+					for (int k = 1; k + 1 < n; ++k) {
+						STri t{}; const CV* q[3] = {&poly[0], &poly[k], &poly[k + 1]};
+						for (int j = 0; j < 3; ++j) {
+							double iz = 1.0 / q[j]->depth;
+							t.x[j] = (float)(W_ / 2.0 + q[j]->lat * iz * v.proj); t.y[j] = (float)(v.horizon - q[j]->up * iz * v.proj);
+							t.iz[j] = (float)iz; t.uz[j] = (float)(q[j]->u * iz); t.vz[j] = (float)(q[j]->v * iz); t.l[j] = (float)q[j]->l;
+						}
+						double area = (t.x[1] - t.x[0]) * (t.y[2] - t.y[0]) - (t.x[2] - t.x[0]) * (t.y[1] - t.y[0]);
+						if (area == 0 || (!b.two_sided && area > 0)) continue; // back face (SC2 winds front faces this way after the y flip)
+						t.minx = std::min({t.x[0], t.x[1], t.x[2]}); t.maxx = std::max({t.x[0], t.x[1], t.x[2]});
+						float miny = std::min({t.y[0], t.y[1], t.y[2]}), maxy = std::max({t.y[0], t.y[1], t.y[2]});
+						if (t.maxx < 0 || t.minx >= W_ || maxy < 0 || miny >= H_) continue;
+						if ((int)std::floor(t.maxx - 0.5f) < (int)std::ceil(t.minx - 0.5f) && t.maxx - t.minx < 1) { // narrower than a pixel centre column
+							if (std::floor(t.minx + 0.5f) == std::floor(t.maxx + 0.5f) && std::floor(t.minx - 0.5f) == std::floor(t.maxx - 0.5f)) continue;
+						}
+						t.tex = tex; t.emis = emis; t.emis_mult = b.emis_mult; t.alpha_test = b.alpha_test; t.two_sided = b.two_sided; t.id = in.id; t.owner = in.owner;
+						out.push_back(t);
+					}
+				}
+			}
+		};
+		unsigned n = std::max(1u, std::min<unsigned>((unsigned)inst.size(), std::min(12u, std::thread::hardware_concurrency())));
+		std::vector<std::vector<STri>> parts(n); std::vector<std::vector<CV>> cvs(n);
+		auto work = [&](unsigned t) { for (size_t i = t; i < inst.size(); i += n) build(inst[i], cvs[t], parts[t]); };
+		if (n == 1) work(0);
+		else { std::vector<std::thread> th; for (unsigned t = 0; t < n; ++t) th.emplace_back(work, t); for (auto& t : th) t.join(); }
+		size_t total = 0; for (auto& p : parts) total += p.size();
+		tris_.reserve(total); for (auto& p : parts) tris_.insert(tris_.end(), p.begin(), p.end());
+	}
+	// Rasterise the prepared triangles into columns xa..xb: perspective-correct texture, depth tested and written.
+	void raster_models(const View& v, uint32_t* fb, int xa, int xb) {
+		const double maxd = p_.view_dist, inv_maxd = 1.0 / maxd, fog_from = 0.4 * maxd, inv_fog = 1.0 / (0.6 * maxd);
+		for (const STri& t : tris_) {
+			if (t.maxx < xa || t.minx >= xb) continue;
+			float area = (t.x[1] - t.x[0]) * (t.y[2] - t.y[0]) - (t.x[2] - t.x[0]) * (t.y[1] - t.y[0]);
+			float ia = 1.0f / area;
+			int x0 = std::max(xa, (int)std::floor(t.minx)), x1 = std::min(xb - 1, (int)std::ceil(t.maxx));
+			int y0 = std::max(0, (int)std::floor(std::min({t.y[0], t.y[1], t.y[2]}))), y1 = std::min(H_ - 1, (int)std::ceil(std::max({t.y[0], t.y[1], t.y[2]})));
+			double pc[3]; player_rgb(t.owner, pc);
+			// barycentrics as linear functions of the pixel centre: w0 = a0 x + b0 y + c0 (w1 likewise, w2 = 1 - w0 - w1)
+			const float a0 = -(t.y[2] - t.y[1]) * ia, b0 = (t.x[2] - t.x[1]) * ia, c0 = ((t.y[2] - t.y[1]) * t.x[1] - (t.x[2] - t.x[1]) * t.y[1]) * ia;
+			const float a1 = -(t.y[0] - t.y[2]) * ia, b1 = (t.x[0] - t.x[2]) * ia, c1 = ((t.y[0] - t.y[2]) * t.x[2] - (t.x[0] - t.x[2]) * t.y[2]) * ia;
+			for (int py = y0; py <= y1; ++py) {
+				const float fy = py + 0.5f, k0 = b0 * fy + c0, k1 = b1 * fy + c1;
+				// the row's inside span: each w >= 0 bounds x from one side
+				float xl = -1e30f, xr = 1e30f; bool empty = false;
+				auto bound = [&](float a, float k) { if (a > 1e-12f) xl = std::max(xl, -k / a); else if (a < -1e-12f) xr = std::min(xr, -k / a); else if (k < 0) empty = true; };
+				bound(a0, k0); bound(a1, k1); bound(-(a0 + a1), 1 - k0 - k1);
+				if (empty || xl > xr) continue;
+				int sx0 = std::max(x0, (int)std::ceil(xl - 0.5f)), sx1 = std::min(x1, (int)std::floor(xr - 0.5f));
+				if (sx0 > sx1) continue;
+				float w0 = a0 * (sx0 + 0.5f) + k0, w1 = a1 * (sx0 + 0.5f) + k1;
+				for (int px = sx0; px <= sx1; ++px, w0 += a0, w1 += a1) {
+					float cw0 = std::max(0.f, w0), cw1 = std::max(0.f, w1), cw2 = std::max(0.f, 1.0f - w0 - w1);
+					float iz = cw0 * t.iz[0] + cw1 * t.iz[1] + cw2 * t.iz[2]; if (iz <= 0) continue;
+					float d = 1.0f / iz; size_t i = (size_t)py * W_ + px;
+					if (d >= zbuf_[i]) continue;
+					const float w0_ = cw0, w1_ = cw1, w2_ = cw2;
+					double r = 150, g = 150, b = 150;
+					if (t.tex) {
+						float u = (w0_ * t.uz[0] + w1_ * t.uz[1] + w2_ * t.uz[2]) * d, vv = (w0_ * t.vz[0] + w1_ * t.vz[1] + w2_ * t.vz[2]) * d;
+						uint32_t c = t.tex->sample(u, vv); int a = (int)(c >> 24);
+						if (t.alpha_test && a < 128) continue;
+						r = (c >> 16) & 255; g = (c >> 8) & 255; b = c & 255;
+						if (t.tex->has_alpha && !t.alpha_test && t.owner < 8 && a < 255) { // SC2: the diffuse alpha masks the team colour
+							double k = 1.0 - a / 255.0, lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255.0 * 1.6;
+							r = r * (1 - k) + pc[0] * lum * k; g = g * (1 - k) + pc[1] * lum * k; b = b * (1 - k) + pc[2] * lum * k;
+						}
+					}
+					double l = w0_ * t.l[0] + w1_ * t.l[1] + w2_ * t.l[2], shade = l * (1.0 - 0.4 * std::min(1.0, d * inv_maxd));
+					if (t.emis) { // glow: added after lighting, so dark crystals and lights shine
+						float u = (w0_ * t.uz[0] + w1_ * t.uz[1] + w2_ * t.uz[2]) * d, vv = (w0_ * t.vz[0] + w1_ * t.vz[1] + w2_ * t.vz[2]) * d;
+						uint32_t e = t.emis->sample(u, vv); double k = std::min(2.0, std::max(0.0, (double)t.emis_mult)) / std::max(0.2, shade);
+						r += ((e >> 16) & 255) * k; g += ((e >> 8) & 255) * k; b += (e & 255) * k;
+					}
+					if (d <= fog_from) fb[i] = pack(r * shade, g * shade, b * shade);
+					else { double f = std::min(1.0, (d - fog_from) * inv_fog), k = shade * (1 - f); fb[i] = pack(r * k + kFog[0] * f, g * k + kFog[1] * f, b * k + kFog[2] * f); }
+					zbuf_[i] = d; idbuf_[i] = t.id;
+				}
+			}
+		}
+		(void)v;
+	}
 
 	static constexpr float kFar = 1e30f; // depth of sky and fog pixels
 	// The nearest of the isometric grid's normals: the axes and the normals of its 2:1 diagonals.
@@ -415,7 +564,7 @@ private:
 	// Selection brackets and a health/shield bar above a unit.
 	void mark(const Camera& cam, const UnitView& un, double depth, double sxc, const View& v, uint32_t* fb, bool selected) {
 		Draw d = geometry(cam, un, depth, sxc, v);
-		if (depth > depth_at((int)sxc, (d.y0 + d.y1) / 2)) return; // its centre is behind terrain
+		if (depth > depth_at((int)sxc, (d.y0 + d.y1) / 2) && !un.model) return; // its centre is behind terrain
 		auto put = [&](int x, int y, uint32_t c) { if (x >= 0 && y >= 0 && x < W_ && y < H_) fb[(size_t)y * W_ + x] = c; };
 		uint32_t col = selected ? 0xFF40FF40 : 0xFFFF4040;
 		int L = std::max(4, (d.x1 - d.x0) / 5);
@@ -432,7 +581,14 @@ private:
 	state& st_; game_state& gs_; state_functions& fn_; Assets& assets_;
 	int W_, H_; RenderParams p_; const HdTiles* tiles_;
 	Terrain terrain_; int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_; double avg_[3] = {0, 0, 0};
-	std::vector<UnitView> units_; std::vector<float> zbuf_; // per-pixel depth of the terrain (kFar for sky and fog)
+	std::vector<UnitView> units_; std::vector<float> zbuf_; // per-pixel depth of the terrain and models (kFar for sky and fog)
+	std::vector<int32_t> idbuf_;                             // per pixel: the units_ index of the model drawn there, -2 static model, -1 none
+	ModelLibrary* models_ = nullptr;
+	struct StaticModel { const M3Model* m; double x, y, scale, yaw; int owner; };
+	std::vector<StaticModel> statics_;
+	// One screen-space triangle of a model, ready to rasterise: x, y, 1/depth and u/depth, v/depth, light per corner.
+	struct STri { float x[3], y[3], iz[3], uz[3], vz[3], l[3]; const M3Texture* tex; const M3Texture* emis; float emis_mult; bool alpha_test, two_sided; int id, owner; float minx, maxx; };
+	std::vector<STri> tris_;
 };
 
 } // namespace fp

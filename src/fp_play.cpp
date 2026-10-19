@@ -10,7 +10,8 @@
 // FPS options: --weapons MOD_DIR (gun art/sounds), --fps-move-shoot (free movement: walk and shoot at once),
 //   --fire-rate N / --range N / --speed N (percent of the StarCraft data, 10..1000)
 // Other options: --race R, --enemy R, --res WxH, --window WxH, --fullscreen, --sim-speed X, --start-frame N,
-//   --no-capture, --no-vsync, --view-dist PX, --eye PX, --level-h PX, --selftest-input, --autotest [--screenshot F.ppm]
+//   --no-capture, --no-vsync, --view-dist PX, --eye PX, --level-h PX, --selftest-input, --autotest [--screenshot F.ppm],
+//   --models DIR (SC Evo Complete's SCEvo_Assets.SC2Mod/Base.SC2Assets: buildings and minerals as 3D models, fp_models.h)
 //
 // Controls (game mode in brackets, FPS mode in braces)
 //   Mouse look; W/A/S/D move (Shift = run); ESC release/capture mouse; Q quit; F12 screenshot (PPM in cwd)
@@ -36,7 +37,7 @@ using namespace fp;
 using Clock = std::chrono::steady_clock;
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
+	std::string data, input, game_map, screenshot, weapons, models; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 	RenderParams rp;
@@ -47,6 +48,7 @@ static race_t parse_race(const std::string& s) { if (s == "terran") return race_
 // A replay or a live game, plus its renderer.
 struct Session {
 	std::unique_ptr<replay_player> player; std::unique_ptr<Game> game; std::unique_ptr<Fps> fps; std::unique_ptr<Renderer> r; bool replay = true;
+	ModelLibrary* models = nullptr; // 3D models (kept across restarts: loaded models stay cached)
 	void open(Assets& assets, const Args& a) {
 		r.reset(); player.reset(); fps.reset(); game.reset();
 		if (!a.game_map.empty()) {
@@ -59,6 +61,7 @@ struct Session {
 			r = std::make_unique<Renderer>(player->st(), player->funcs(), assets, a.rw, a.rh, a.rp);
 			for (int i = 0; i < a.start_frame && !done(); ++i) step();
 		}
+		if (models) r->set_models(models);
 		r->update_units();
 	}
 	bool live() const { return game != nullptr; }
@@ -288,6 +291,7 @@ int main(int argc, char** argv) {
 		else if (k == "--selftest-input") { a.selftest_input = true; a.no_capture = true; }
 		else if (k == "--screenshot") a.screenshot = next();
 		else if (k == "--view-dist") a.rp.view_dist = atof(next());
+		else if (k == "--models") a.models = next();
 		else if (k == "--eye") a.rp.eye_h = atof(next());
 		else if (k == "--level-h") a.rp.level_h = atof(next());
 		else die("unknown option");
@@ -298,10 +302,12 @@ int main(int argc, char** argv) {
 	if (a.speed_pct < 10 || a.speed_pct > 1000) die("--speed must be 10..1000 (percent of the StarCraft movement speed)");
 	if (a.speed < 0.125 || a.speed > 16) die("--sim-speed must be 0.125..16 (the = / - keys use the same range)");
 	if (a.rp.view_dist < 200 || a.rp.eye_h < 1 || a.rp.level_h < 8) die("--view-dist must be >= 200, --eye >= 1, --level-h >= 8 (px)");
-	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--selftest-input] [--autotest [--screenshot F.ppm]]");
+	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
-		Session s; s.open(assets, a);
+		std::unique_ptr<ModelLibrary> models;
+		if (!a.models.empty()) { models = std::make_unique<ModelLibrary>(a.models); if (!models->ok()) die("--models: no files under that directory"); }
+		Session s; s.models = models.get(); s.open(assets, a);
 		if (a.autotest) return autotest(s, assets, a);
 
 		if (SDL_Init(SDL_INIT_VIDEO) != 0) { std::cerr << "SDL_Init: " << SDL_GetError() << "\n"; return 1; }

@@ -6,7 +6,8 @@
 #
 # Spots are fp_view's deterministic --spot list (start locations, then the map centre and quarter points). The demo
 # replay gets one row, seen from its first player unit at frame 6000.
-# Overrides: DATA_DIR (extracted CASC files), MAPS_DIR (stock maps), REPLAY, SPOTS (default "0 1 2").
+# Overrides: DATA_DIR (extracted CASC files), MAPS_DIR (stock maps), REPLAY, SPOTS (default "0 1 2"), MODELS_DIR (3D models,
+# used when it exists, as run.sh does; NO_MODELS=1 renders sprites only).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")/.."
 
@@ -15,6 +16,8 @@ DATA_DIR="${DATA_DIR:-../starcraft-data/casc-scratch/extracted}"
 MAPS_DIR="${MAPS_DIR:-$HOME/Games/battlenet/drive_c/Program Files (x86)/StarCraft/Maps}"
 REPLAY="${REPLAY:-../starcraft-data/titan-reactor/bundled/demo.rep}"
 SPOTS="${SPOTS:-0 1 2}"
+MODELS_DIR="${MODELS_DIR:-../starcraft-data/SCEvoComplete/SC Evo Complete/SCEvo_Assets.SC2Mod/Base.SC2Assets}"
+models=(); if [ -z "${NO_MODELS:-}" ] && [ -d "$MODELS_DIR" ]; then models=(--models "$MODELS_DIR"); fi
 command -v magick >/dev/null || { echo "golden.sh: needs ImageMagick (magick)" >&2; exit 1; }
 make -s build/fp_view >&2
 
@@ -28,7 +31,7 @@ row() { # row OUT.png fp_view-args... : the four headings side by side
 	local dst="$1"; shift; local tiles=()
 	for h in "${headings[@]}"; do
 		local f="$frames/$(basename "$dst" .png)_h$h.ppm"
-		./build/fp_view --data "$DATA_DIR" "$@" --heading "$h" --out "$f" >/dev/null || return 1
+		./build/fp_view --data "$DATA_DIR" "$@" ${models[@]+"${models[@]}"} --heading "$h" --out "$f" >/dev/null || return 1
 		tiles+=("$f")
 	done
 	magick "${tiles[@]}" +append "$dst"

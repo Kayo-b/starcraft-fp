@@ -2,12 +2,13 @@
 #include "fp_render.h"
 #include <cstdio>
 #include <iostream>
+#include <memory>
 #include <string>
 
 using namespace fp;
 
 struct Args {
-	std::string data, input, out = "out/fp.ppm", topdown, heightmap;
+	std::string data, input, out = "out/fp.ppm", topdown, heightmap, models, model; double model_x = -1, model_y = -1, model_yaw = 0, model_scale = 32; int model_owner = 1;
 	int frames = 0, unit = -1, spot = -1, w = 640, h = 400; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false, print_tileset = false; RenderParams rp;
 };
 static void die(const char* m) { std::cerr << m << "\n"; std::exit(2); }
@@ -31,12 +32,17 @@ int main(int argc, char** argv) {
 		else if (k == "--print-tileset") a.print_tileset = true;
 		else if (k == "--spot") a.spot = atoi(next());
 		else if (k == "--heightmap") a.heightmap = next();
+		else if (k == "--models") a.models = next();
+		else if (k == "--model") a.model = next();
+		else if (k == "--model-at") { double yaw = 0; int n = sscanf(next(), "%lf,%lf,%lf", &a.model_x, &a.model_y, &yaw); if (n == 3) a.model_yaw = yaw; }
+		else if (k == "--model-scale") a.model_scale = atof(next());
+		else if (k == "--model-owner") a.model_owner = atoi(next());
 		else if (k == "--eye") a.rp.eye_h = atof(next());
 		else if (k == "--level-h") a.rp.level_h = atof(next());
 		else if (k == "--view-dist") a.rp.view_dist = atof(next());
 		else die("unknown option");
 	}
-	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm] [--heightmap F.ppm] [--print-tileset] [--eye PX] [--level-h PX] [--view-dist PX]");
+	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm] [--heightmap F.ppm] [--print-tileset] [--eye PX] [--level-h PX] [--view-dist PX] [--models DIR [--model FILE --model-at X,Y[,YAW] [--model-scale PX] [--model-owner P]]]");
 	try {
 		replay_player player;
 		player.init(dir_loader(a.data));
@@ -49,6 +55,14 @@ int main(int argc, char** argv) {
 		}
 		Assets assets(a.data);
 		Renderer r(player.st(), player.funcs(), assets, a.w, a.h, a.rp);
+		std::unique_ptr<ModelLibrary> models;
+		if (!a.models.empty()) {
+			models = std::make_unique<ModelLibrary>(a.models); if (!models->ok()) die("--models: no files under that directory");
+			r.set_models(models.get());
+			if (!a.model.empty()) { const M3Model* m = models->load(a.model); if (!m) die("--model: could not load");
+				r.add_static_model(m, a.model_x, a.model_y, a.model_scale, a.model_yaw, a.model_owner);
+				std::cout << "model " << a.model << ": " << m->triangles() << " triangles, " << m->tex.size() << " textures\n"; }
+		}
 		r.update_units();
 		std::cout << "map " << r.map_w() << "x" << r.map_h() << " px, units " << r.units().size() << "\n";
 		Camera cam; cam.heading = a.heading; cam.pitch = a.pitch; const unit_t* hide = nullptr;
