@@ -47,7 +47,8 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
 Two players over TCP, each on their own computer (or two windows on one). StarCraft melee start: each player gets a town hall,
 4 workers and 50 minerals, plus their race's FPS hero next to it (Raynor's Marine, Fenix's Dragoon, the Hunter-Killer). Both
 games run the whole simulation in lockstep (OpenBW's `sync.h`, `src/fp_net.h`); only commands travel, and a command takes effect
-in both games on the same frame, `--latency` frames after it was given.
+in both games on the same frame, a few frames (the latency) after it was given. The host measures the round trip in the lobby and
+picks the latency from it (localhost and LAN: 2 frames, 83 ms; a 100 ms round trip: 3; 200 ms: 4), and the joiner takes it.
 
     ./run.sh --host                   # wait for the other player on port 6112 (GAME_MAP, or --game MAP; --race R)
     ./run.sh --join 192.168.1.20      # on the other computer: the same map file, --fire-rate/--range/--speed/--fps-move-shoot
@@ -55,21 +56,26 @@ in both games on the same frame, `--latency` frames after it was given.
 - **Hero view** (the start): the FPS controls (WASD order-driven movement, hold LMB to fire, RMB move/attack at the crosshair).
   A dead hero comes back at its start location after 10 s. The top line counts hero kills : deaths.
 - **Free movement** (`--fps-move-shoot`, both players): walk and shoot at once. Walking input and shots are commands like any other,
-  so they land `--latency` frames later; your own camera does not wait for that: it runs the same movement code ahead over the input
-  still on its way, which is exactly where your hero ends up (only terrain stops a hero), and draws in between frames. The other
-  player's hero is drawn where the simulation has it, moving in frame steps.
+  so they land a latency later; your own camera does not wait for that: it runs the same movement code ahead over the input
+  still on its way, which is exactly where your hero ends up (only terrain stops a hero), and draws in between frames.
+- **Smooth motion**: the simulation moves units 24 times a second; every unit (the other player's hero, your base, the follow
+  camera in the order-driven hero view) is drawn on its way between the last two simulation frames, at most a frame (42 ms) behind.
 - **Commanding the base**: F steps out of the hero into a free camera with the game sandbox controls (LMB select, RMB order,
   E possess, T worker, Y combat unit, B supply, X stop, TAB next unit); meanwhile the hero fights like any StarCraft unit. F, or E
   with the hero selected, goes back into it.
 - Victory and defeat follow StarCraft's melee rules (a player who loses every building is defeated). Q leaves the game (the other
   player wins and their game goes on). Pause, sim speed and restart are off.
 - Fog of war: the other player's units are drawn, and can be targeted, only where your units see them; neutral units always.
-- Options: `--race R`, `--name NAME` (default `$USER`), `--latency N` (1..8, default 2, ~83 ms; raise it on a slow link; both players
-  must use the same value). The host waits for a player as long as it takes; a joiner retries for a minute.
-- Checked at the start: the program version, the map file (CRC), `--latency`, the FPS tuning and the movement mode must match. Every frame each game sends
+- Options: `--race R`, `--name NAME` (default `$USER`), `--latency N|auto` on the host (1..8 frames; default auto, from the round
+  trip; a joiner's is ignored). The host waits for a player as long as it takes; a joiner retries for a minute.
+- HUD, top right: the latency and the ping, the round trip during the game. The ping includes the wait until each game next reads the
+  network (once per rendered frame), so it is higher than the network's own, ~30-70 ms with two windows on one computer: that wait
+  is part of what the latency has to cover. The latency is picked for windows rendering at 60 Hz or more.
+- Checked at the start: the program version, the map file (CRC), the latency, the FPS tuning and the movement mode must match. Every frame each game sends
   a hash of its state and the other compares it with its own: a difference stops the game with "out of sync at frame N" (none
-  seen in the tests). The status lines show "Waiting for NAME..." while the other game lags and "NAME left the game" or "Lost the
-  connection to NAME" when it is gone.
+  seen in the tests). "Waiting for NAME..." shows when the game has stood still for 0.3 s, or spent 40% of the last second
+  waiting for the other one (a game that keeps stopping), and stays for a second after (it does not blink); "NAME left the game" or
+  "Lost the connection to NAME" when the other game is gone.
 - Not yet: more than two players (`sync.h` takes one peer), NAT traversal (the joiner must reach the host's TCP port: forward it on the
   host's router), reconnecting, remembered enemy buildings in the fog, cloaked units shown as such.
 
@@ -98,10 +104,12 @@ in both games on the same frame, `--latency` frames after it was given.
 ## Tests
 `make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=.../W40K_Boltgun_Doom_a0.9.1` runs the headless suites: `fp_terraintest` (the terrain
 model against OpenBW's walkability and ground heights; `TERRAIN_MAPS=...` adds maps), `fp_gametest` (RTS orders, determinism),
-`fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death), `fp_nettest` (two games in two threads over localhost TCP: the same
+`fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death, units drawn between frames), `fp_nettest` (two games in two threads over localhost TCP: the same
 state on every frame of a 2400-frame game with commands, a hero fight and respawns; commands landing on the same frame in both after the
 latency; a deliberate state change found on the next frame; a player leaving; free movement with shooting, and the camera's
-prediction matching the simulation on every frame; built with AddressSanitizer), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
+prediction matching the simulation on every frame; over a relay holding everything 50 ms each way, the latency picked from the
+round trip and both games, paced as the window paces them, keeping up with the clock, and falling behind with a latency too short;
+the latency table and the waiting indicator's timing; built with AddressSanitizer), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
 Window tests (they open a window briefly): `fp_play ... --selftest-input` for replay, `--game MAP` and `--game MAP --fps --weapons MOD_DIR`
 (use `SDL_AUDIODRIVER=dummy` to stay silent); `--autotest` checks collision against OpenBW `is_walkable`. Multiplayer: start
 `--game MAP --host PORT --selftest-input` and `--game MAP --join 127.0.0.1:PORT --selftest-input` together; both must pass

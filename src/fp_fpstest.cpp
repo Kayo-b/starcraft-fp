@@ -166,6 +166,34 @@ int main(int argc, char** argv) {
 		unit_t* p = fps.player(); for (int i = 0; i < 40; ++i) g.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 20 + (i % 8) * 6, p->sprite->position.y + 20 + (i / 8) * 6}, g.enemy());
 		for (int i = 0; i < 600 && fps.alive(); ++i) g.step();
 		check(!fps.alive(), "player death is detected (40 Zerglings on top of the player)");
+		// Drawing between simulation frames (Renderer::update_units): a walking unit is drawn on its way from the previous
+		// frame's position to the current one; a new unit, and one put somewhere else, are drawn where they are.
+		{ Game g3; g3.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f(g3, 7, 200, 200, 90, true); f.start(); unit_t* h = f.player();
+		  Assets assets(argv[1]); Renderer r(g3.st(), g3.fn(), assets, 64, 40);
+		  auto drawn = [&](const unit_t* u) { for (auto& v : r.units()) if (v.ptr == u) return std::make_pair(v.x, v.y); return std::make_pair(-1.0, -1.0); };
+		  const double PI = 3.14159265358979323846; xy s = h->sprite->position; int best = 0; double bx = 1, by = 0; // the longest clear walk from the start
+		  auto clear = [&](double x, double y) { return x >= 16 && y >= 16 && x < (int)g3.st().game->map_width - 16 && y < (int)g3.st().game->map_height - 16 && g3.fn().is_walkable(xy{(int)x, (int)y}); };
+		  for (int d = 0; d < 8; ++d) { double ix = std::cos(d * PI / 4), iy = std::sin(d * PI / 4); int n = 0;
+			while (n < 400 && clear(s.x + ix * n, s.y + iy * n)) n += 4;
+			if (n > best) { best = n; bx = ix; by = iy; } }
+		  for (int i = 0; i < 30; ++i) { f.drive(bx, by); g3.step(); f.tick(); r.update_units(); }
+		  double x0 = h->sprite->position.x, y0 = h->sprite->position.y; g3.step(); f.tick(); double x1 = h->sprite->position.x, y1 = h->sprite->position.y;
+		  r.update_units(0); auto a0 = drawn(h); r.update_units(0.5); auto a5 = drawn(h); r.update_units(1); auto a1 = drawn(h);
+		  check((x1 != x0 || y1 != y0) && a0.first == x0 && a0.second == y0 && a5.first == (x0 + x1) / 2 && a5.second == (y0 + y1) / 2 && a1.first == x1 && a1.second == y1,
+		        bwgame::format("drawn between frames: a walking hero at 0, 1/2 and 1 of the way from (%.0f,%.0f) to (%.0f,%.0f) is drawn at (%.1f,%.1f), (%.1f,%.1f), (%.1f,%.1f)", x0, y0, x1, y1, a0.first, a0.second, a5.first, a5.second, a1.first, a1.second).c_str());
+		  unit_t* z = g3.spawn(UnitTypes::Zerg_Zergling, xy{(int)(x1 - by * 60), (int)(y1 + bx * 60)}, g3.enemy());
+		  if (!z) z = g3.spawn(UnitTypes::Zerg_Zergling, xy{(int)(x1 + by * 60), (int)(y1 - bx * 60)}, g3.enemy());
+		  f.drive(0, 0); f.place(s.x, s.y); g3.step(); f.tick(); r.update_units(0); auto zn = drawn(z), hp = drawn(h);
+		  check(z && zn.first == z->sprite->position.x && zn.second == z->sprite->position.y, "drawn between frames: a new unit is drawn where it is, not on its way from somewhere");
+		  check(std::hypot(x1 - s.x, y1 - s.y) > 64 && h->sprite->position == s && hp.first == s.x && hp.second == s.y, bwgame::format("drawn between frames: a hero put back %.0f px is drawn there at once, not sliding (drawn at %.0f,%.0f)", std::hypot(x1 - s.x, y1 - s.y), hp.first, hp.second).c_str());
+		  // Direction 255 (just west of north) is a direction like any other: the walking input once sent it as "no input".
+		  xy at{-1, -1}; for (int dy = -320; dy <= 320 && at.x < 0; dy += 16) for (int dx = -320; dx <= 320 && at.x < 0; dx += 16) {
+			bool ok = true; for (int k = 0; k <= 120 && ok; k += 4) for (int sx : {-10, 10}) ok = ok && clear(s.x + dx + sx - k / 40.0, s.y + dy - k);
+			if (ok) at = xy{s.x + dx, s.y + dy}; }
+		  if (at.x >= 0) { f.drive(0, 0); f.place(at.x, at.y); for (int i = 0; i < 2; ++i) { g3.step(); f.tick(); }
+			f.drive(-std::sin(PI / 128), -std::cos(PI / 128)); for (int i = 0; i < 8; ++i) { g3.step(); f.tick(); }
+			check(at.y - h->sprite->position.y > 30 && f.speed() > 150, bwgame::format("direct mode: walking in direction 255 (just west of north) moves the hero (%d px north, %.0f px/s)", at.y - h->sprite->position.y, f.speed()).c_str()); }
+		  else check(false, "direct mode: found clear ground north of a spot near the start for the direction-255 walk"); }
 	} catch (const std::exception& e) { std::cout << "ERROR: " << e.what() << "\n"; return 1; }
 	std::cout << (failures ? "FPSTEST FAILED" : "FPSTEST PASSED") << "\n";
 	return failures ? 1 : 0;

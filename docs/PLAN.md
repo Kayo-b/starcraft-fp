@@ -145,8 +145,28 @@ client (command card, hotkeys) and no Remastered client (closed, no API; see the
   shot twice (when fired and again from the weapon cooldown), so the gun animation and sound played twice per shot (on `main`:
   2 shots, 4 counted; `fp_fpstest` now checks it). Not done: the other player's hero is drawn at simulation steps
   (interpolation is N3).
-- **N3** `todo` Feel over a real network: camera interpolation between frames, latency picked from the measured round trip,
-  a "waiting" indicator that does not flicker.
+- **N3** `done` Feel over a real network. Latency from the round trip: the host pings the joiner in the lobby (our own messages,
+  taken out of the TCP stream before OpenBW's sync layer by `NetServer`), takes the 90th percentile of 12+ samples and picks
+  1 + ceil((rtt/2 + 25 ms) / 42 ms) frames, at least 2 (`pick_latency`; `--latency N` on the host fixes it). Both games must switch
+  while no scheduled message is on its way, since a game schedules what it receives with its own latency of that moment: after
+  both slots and races have been applied, before the start, which is sent after the latency (so the joiner has switched by then);
+  the lobby itself runs at 2. Fixed for the game (changed later, scheduled commands could land out of order). Ping every 0.5 s in
+  the game for the HUD. Drawing between frames: the renderer keeps each unit's position on the previous simulation frame and draws
+  `acc / sim_dt` of the way to the current one (new units, gaps over 4 frames and jumps over 64 px are drawn where they are); the
+  follow camera reads the same positions. Lockstep pacing: a game blocked on the other no longer keeps up to two frames of backlog
+  to catch up with; it drops the time. Kept, the game that started earlier on its clock stayed early and waited a few ms before
+  nearly every step, then stepped in pairs (stutter; over a 100 ms relay the host was blocked on 5.5 s of 7). Dropped, it settles
+  later on its clock, where neither game waits (0-0.15 s of 7). "Waiting for NAME..." (`WaitIndicator`): on after 0.3 s standing
+  still or 40% of about the last second waiting, off after 1 s of running without either. Found and fixed (N2): a walking
+  direction of 255 (just west of north) was sent as one byte, 255 being "no input", so walking that way braked the hero for a frame
+  in the simulation while the camera kept going (about 2 px off); the nettest's prediction check failed in 3 of 4 runs of the
+  committed N2 code (each run is a different game; the baseline run had passed by luck). Now two bytes; `kProtocol` 3.
+  Tests: `fp_nettest` sessions 5-6 through `SlowLink` (a relay holding everything 50 ms each way; games paced like the window at
+  60 Hz): round trip measured at ~101-104 ms, latency 3 for both, the games keep up with the clock and seldom wait; at latency 2
+  over the same relay they fall ~13% behind and wait ~2 s of 8. Plus the latency table, the indicator's timing on synthetic stop
+  patterns, auto latency over localhost (2), `fp_fpstest` units drawn between frames and the direction-255 walk (fails with the
+  old encoding). Not checked: play by a person over a real network (feel cannot be tested headless); the 25 ms margin assumes
+  windows rendering at 60 Hz or more (the ping is answered once per rendered frame: ~30-70 ms with two windows on one computer).
 - **N4** `todo` Fog of war: remembered enemy buildings, cloaked units, terrain dimmed outside vision.
 - **N5** `todo` Internet play: a relay or NAT punching, reconnecting, a replay of the match (`sync.h` can save one).
 

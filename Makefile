@@ -47,7 +47,7 @@ build/terrain_survey: tools/terrain_survey.cpp $(HDRS)
 
 # Headless tests. Usage: make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=.../W40K_Boltgun_Doom_a0.9.1
 # (TERRAIN_MAPS: more quoted map paths for fp_terraintest, e.g. one per tileset). fp_nettest connects two games over
-# localhost TCP (ports 47000-49001; NET_PORT=N picks one).
+# localhost TCP (ports 47000-49006; NET_PORT=N picks one).
 test: build/fp_gametest build/fp_fpstest build/fp_nettest build/fp_assettest build/fp_terraintest
 	./build/fp_terraintest "$(DATA_DIR)" "$(MAP)" $(TERRAIN_MAPS)
 	./build/fp_gametest "$(DATA_DIR)" "$(MAP)"

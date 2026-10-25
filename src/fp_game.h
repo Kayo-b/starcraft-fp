@@ -27,7 +27,7 @@ public:
 	// Custom message channels (first byte of a custom command).
 	enum : uint8_t { kChanGame = 1, kChanFps = 2 };
 	enum : uint8_t { kHello = 1, kHash = 2 };
-	static constexpr int kProtocol = 2;   // bump when commands or the simulation-side code change incompatibly
+	static constexpr int kProtocol = 3;   // bump when commands, the lobby or the simulation-side code change incompatibly
 	// Every frame each game sends a hash of its state; the other compares it with its own for that frame (kept for the
 	// last kHashRing frames). OpenBW's own check (sync.h, every 32 frames) drops the connection on a mismatch; this one
 	// comes first and says why.
@@ -167,6 +167,9 @@ public:
 	// ---- two-player status ----
 	bool net() const { return net_ != nullptr; }
 	int latency() const { return net_ ? net_->latency() : 0; }
+	double rtt_ms() const { return net_ ? net_->rtt_ms() : 0; }             // round trip during the game (0 before the first)
+	double lobby_rtt_ms() const { return net_ ? net_->lobby_rtt_ms() : 0; } // what the latency was picked from (0: none measured)
+	Net* network() { return net_.get(); }
 	bool opponent_left() const { return net_ && net_->peers() < 2; }
 	// The other player's game went away without leaving (connection lost, or OpenBW found the games out of sync).
 	bool opponent_dropped() { return opponent_left() && st().players[enemy_].victory_state == 1; }
@@ -244,7 +247,7 @@ private:
 		if (kind == kHello) {
 			int proto = r.get<uint8_t>(), lat = r.get<uint8_t>(); uint32_t crc = r.get<uint32_t>(), set = r.get<uint32_t>();
 			if (proto != kProtocol) failure_ = "the other player runs a different version of this program";
-			else if (lat != latency()) failure_ = format("the other player uses --latency %d (this game: %d)", lat, latency()).c_str();
+			else if (lat != latency()) failure_ = format("the games disagree on the latency (%d and %d frames): the host's choice did not arrive", lat, latency()).c_str();
 			else if (crc != map_crc_) failure_ = "the other player loaded a different map file";
 			else if (set != settings_) failure_ = "the other player uses different game settings (--fire-rate / --range / --speed / --fps-move-shoot)";
 		} else if (kind == kHash) {

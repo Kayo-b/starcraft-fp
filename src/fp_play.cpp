@@ -10,9 +10,10 @@
 //                        person or step out (F) to command the base. Both players load the same map file. Port 6112.
 //   --map FILE           load a map with neutral units only
 //
-// Multiplayer options: --latency N (frames between a command and its effect, 1..8, default 2; both players alike),
-//   --name NAME. Pause, sim speed and restart are off; --fire-rate/--range/--speed/--fps-move-shoot must match the other
-//   player's. With --fps-move-shoot the camera shows your hero where your input is taking it (no wait for the latency).
+// Multiplayer options: --latency N|auto (host: frames between a command and its effect, 1..8; default auto, picked from
+//   the round trip measured in the lobby; the joiner takes the host's), --name NAME. Pause, sim speed and restart are off;
+//   --fire-rate/--range/--speed/--fps-move-shoot must match the other player's. With --fps-move-shoot the camera shows
+//   your hero where your input is taking it (no wait for the latency).
 //
 // FPS options: --weapons MOD_DIR (gun art/sounds), --fps-move-shoot (free movement: walk and shoot at once),
 //   --fire-rate N / --range N / --speed N (percent of the StarCraft data, 10..1000)
@@ -71,7 +72,8 @@ struct Session {
 			game->open_net(a.data, a.game_map, a.race, a.netopt, [](const std::string& m) { std::cout << m << std::endl; }, Fps::settings_hash(a.fire_rate, a.range_pct, a.speed_pct, a.direct));
 			fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct, a.speed_pct, a.direct, true);
 			if (!fps->start()) error("the map has no room for the heroes at the start locations");
-			std::cout << "Game started against " << game->opponent_name() << " (you are player " << game->owner() + 1 << ")" << std::endl;
+			std::cout << "Game started against " << game->opponent_name() << " (you are player " << game->owner() + 1 << "; latency " << game->latency() << " frames"
+				<< (game->lobby_rtt_ms() > 0 ? bwgame::format(", round trip %.0f ms", game->lobby_rtt_ms()).c_str() : "") << ")" << std::endl;
 			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh, a.rp);
 			r->set_viewer(game->owner()); // the other player's units only where yours see them
 		} else if (!a.game_map.empty()) {
@@ -299,7 +301,7 @@ static int autotest(Session& s, Assets&, const Args& a) {
 }
 
 int main(int argc, char** argv) {
-	Args a;
+	Args a; bool latency_given = false;
 	for (int i = 1; i < argc; ++i) {
 		std::string k = argv[i];
 		auto next = [&]() -> const char* { if (i + 1 >= argc) die("missing value"); return argv[++i]; };
@@ -334,7 +336,7 @@ int main(int argc, char** argv) {
 			if (i + 1 < argc && argv[i + 1][0] && std::all_of(argv[i + 1], argv[i + 1] + strlen(argv[i + 1]), [](char c) { return std::isdigit((unsigned char)c) != 0; })) a.netopt.port = atoi(argv[++i]); }
 		else if (k == "--join") { a.net = true; a.netopt.host = false; std::string hp = next(); size_t c = hp.rfind(':');
 			a.netopt.address = hp.substr(0, c); if (c != std::string::npos) a.netopt.port = atoi(hp.c_str() + c + 1); }
-		else if (k == "--latency") a.netopt.latency = atoi(next());
+		else if (k == "--latency") { std::string v = next(); int n = atoi(v.c_str()); a.netopt.latency = v == "auto" ? 0 : n >= 1 ? n : -1; latency_given = true; }
 		else if (k == "--name") a.netopt.name = next();
 		else die("unknown option");
 	}
@@ -347,12 +349,13 @@ int main(int argc, char** argv) {
 	if (a.net) {
 		if (a.game_map.empty()) die("--host / --join need --game MAP (the same map file on both computers)");
 		if (a.autotest) die("--autotest is single player only");
-		if (a.netopt.latency < 1 || a.netopt.latency > 8) die("--latency must be 1..8 frames");
+		if (a.netopt.latency < 0 || a.netopt.latency > 8) die("--latency must be 1..8 frames or auto");
+		if (!a.netopt.host && latency_given) { std::cout << "note: the host picks the latency; --latency is ignored when joining" << std::endl; a.netopt.latency = 0; }
 		if (a.netopt.port < 1 || a.netopt.port > 65535 || a.netopt.address.empty()) die("--host [PORT] / --join HOST[:PORT]: port 1..65535");
 		a.fps = true; a.speed = 1.0; a.netopt.wait_seconds = a.netopt.host ? 0 : 60; // the host waits for a player; a joiner retries for a minute
 		if (a.netopt.name == "player") if (const char* u = getenv("USER")) if (*u) a.netopt.name = u;
 	}
-	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--host [PORT] | --join HOST[:PORT] [--latency N] [--name NAME]] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--selftest-input] [--autotest [--screenshot F.ppm]]");
+	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [(--host [PORT] [--latency N|auto] | --join HOST[:PORT]) [--name NAME]] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
 		std::unique_ptr<ModelLibrary> models;
@@ -396,9 +399,9 @@ int main(int argc, char** argv) {
 		auto last = Clock::now(); int shots = 0;
 		Pick pick; Overlay ov; bool moving = false; int last_move_order = -100;
 		bool firing = false, fire_ready = false, enemy_aimed = false; int last_shots = 0, last_hp = -1, pain_plays = 0, death_plays = 0; double flash = 0, pain_cd = 0; bool dead_seen = false;
-		// Multiplayer: commanding the base (free camera, game-mode controls) instead of playing the hero; seconds spent
-		// waiting for the other player's game; the hero last followed (a respawned hero is a new unit).
-		bool commander = false; double stalled = 0; int last_hero_id = -1;
+		// Multiplayer: commanding the base (free camera, game-mode controls) instead of playing the hero; when to say that
+		// this game waits for the other player's; the hero last followed (a respawned hero is a new unit).
+		bool commander = false; WaitIndicator wait; int last_hero_id = -1;
 		auto set_commander = [&](bool on) {
 			if (!s.fps || on == commander) return;
 			commander = on; firing = false; moving = false;
@@ -533,6 +536,10 @@ int main(int argc, char** argv) {
 		if (net_test) { // multiplayer plan, run by both players' games (start both with --selftest-input)
 			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
 			K(2.5, "check lockstep", [&] { st.check("the game runs in lockstep with the other player's (frame " + std::to_string(s.frame()) + ", " + (s.game->failure().empty() ? std::string("no failure") : s.game->failure()) + ")", s.frame() > 30 && s.game->failure().empty() && !s.game->opponent_left()); });
+			K(2.55, "check latency", [&] { Net& n = *s.game->network();
+				st.check(bwgame::format("the latency is the host's pick from the round trip (%d frames; round trip %.2f ms over %d pings%s)", s.game->latency(), n.lobby_rtt_ms(), n.lobby_samples(), a.netopt.host ? "" : ", received from the host").c_str(),
+					a.netopt.host ? (a.netopt.latency > 0 ? s.game->latency() == a.netopt.latency : n.lobby_samples() >= Net::kPingSamples && s.game->latency() == pick_latency(n.lobby_rtt_ms())) : n.latency_from_host());
+				st.check(bwgame::format("the round trip is measured during the game (%.1f ms, shown on the HUD)", s.game->rtt_ms()).c_str(), s.game->rtt_ms() > 0); });
 			K(2.6, "check hero", [&] { st.check("your hero is in the game and the camera is on it", s.fps->alive() && v.follow == s.fps->player()); });
 			K(2.7, "check fog", [&] { int seen = 0; for (auto& u : s.r->units()) if (u.owner == s.game->enemy()) ++seen;
 				st.check("the other player's base, far away in the fog, is not drawn (" + std::to_string(seen) + " of their units drawn)", seen == 0); });
@@ -614,10 +621,13 @@ int main(int argc, char** argv) {
 			}
 			if (s.fps && !commander) s.fps->set_trigger(firing && fire_ready); // the weapon fires only while the trigger is held on a target in range
 			// simulation
-			bool waiting = false; // multiplayer: the other player's game has not caught up yet (lockstep)
-			if (!paused && !s.done()) { acc += dt * speed; int n = 0; while (acc >= sim_dt && n < 16 && !s.done()) { if (!s.step()) { waiting = true; acc = std::min(acc, 2 * sim_dt); break; } acc -= sim_dt; ++n; } if (n == 16) acc = 0; }
-			stalled = waiting ? stalled + dt : 0;
-			s.r->update_units();
+			// Multiplayer: while the other player's game has not caught up (lockstep) the time goes, rather than piling up to be
+			// caught up with: a game that kept it would stay early on its clock and wait before nearly every step, stepping
+			// in pairs after (stutter). Dropped, it settles a little later, where neither game waits for the other.
+			bool waiting = false;
+			if (!paused && !s.done()) { acc += dt * speed; int n = 0; while (acc >= sim_dt && n < 16 && !s.done()) { if (!s.step()) { waiting = true; acc = sim_dt; break; } acc -= sim_dt; ++n; } if (n == 16) acc = 0; }
+			wait.update(waiting, dt);
+			s.r->update_units(acc / sim_dt); // drawn between the last two simulation frames
 			// FPS: firing, feedback events
 			if (s.fps) {
 				Fps& F = *s.fps; unit_t* hero = F.player();
@@ -712,7 +722,7 @@ int main(int argc, char** argv) {
 					else if (G.won()) big = "VICTORY";
 					else if (G.lost()) big = "DEFEAT";
 					if (G.failure().empty() && G.opponent_left()) line = G.opponent_dropped() ? "Lost the connection to " + opp : opp + " left the game";
-					else if (G.failure().empty() && stalled > 0.3) line = "Waiting for " + opp + "...";
+					else if (G.failure().empty() && wait.shown()) line = "Waiting for " + opp + (wait.stalled >= 2 ? bwgame::format("... %d s", (int)wait.stalled).c_str() : "...");
 					if (!big.empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3, big, SDL_Color{255, 220, 80, 255});
 					if (!line.empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3 + lh + 4, line, white);
 				}
@@ -721,7 +731,7 @@ int main(int argc, char** argv) {
 					hud.text(dst.x + dst.w / 2, dst.y + dst.h / 2 + 16, bwgame::format("%s %s  %d/%d", cmd.name(u).c_str(), rel, u->hp.integer_part(), u->unit_type->hitpoints.integer_part()), white, true, false);
 				}
 				if (cmd.msg_t > 0) hud.text(dst.x + dst.w / 2 - 150, dst.y + dst.h - pad - lh * 4 - sl, cmd.msg, cyan);
-				hud.text(dst.x + dst.w - pad, dst.y + pad, s.net() ? std::string(bwgame::format("%.0f fps  latency %d", fps, s.game->latency())) : std::string(bwgame::format("%.0f fps  x%.3g%s%s", fps, speed, paused ? "  PAUSED" : "", s.done() ? "  END" : "")), grey, true, true);
+				hud.text(dst.x + dst.w - pad, dst.y + pad, s.net() ? std::string(bwgame::format("%.0f fps  latency %d", fps, s.game->latency())) + (s.game->rtt_ms() > 0 ? bwgame::format("  ping %.0f ms", s.game->rtt_ms()).c_str() : "") : std::string(bwgame::format("%.0f fps  x%.3g%s%s", fps, speed, paused ? "  PAUSED" : "", s.done() ? "  END" : "")), grey, true, true);
 				hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, (std::string(s.net() ? (commander ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F back to your hero" : "WASD move  Mouse aim  LMB (hold) fire  RMB move here  F command your base") : s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : "TAB follow  F free  P pause  =/- speed  R restart") + (s.models ? "  M models" : "")), grey, true, true);
 			}
 			SDL_RenderPresent(ren);

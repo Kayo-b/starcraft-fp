@@ -232,7 +232,7 @@ private:
 		}
 		else if (kind == kMsgMove || kind == kMsgGoal || kind == kMsgHalt) {
 			Input e{0, kind, 0, 0};
-			if (kind == kMsgMove) { int d = r.get<uint8_t>(); e.a = d == 255 ? -1 : d; }
+			if (kind == kMsgMove) { int d = r.get<uint16_t>(); e.a = d > 255 ? -1 : d; }
 			else if (kind == kMsgGoal) { e.a = r.get<uint16_t>(); e.b = r.get<uint16_t>(); }
 			apply(h.m, e);
 			if (slot == g_.owner() && !pending_.empty()) pending_.erase(pending_.begin());
@@ -276,7 +276,7 @@ private:
 		if (!direct_) return;
 		pending_.push_back({g_.command_frame(), kind, a, b}); // first: single player applies it (and drops it) at once
 		ActionWriter w; w.u8(Game::kChanFps).u8(kind);
-		if (kind == kMsgMove) w.u8(a < 0 ? 255 : a); else if (kind == kMsgGoal) w.u16(a).u16(b);
+		if (kind == kMsgMove) w.u16(a < 0 ? 0xffff : a); else if (kind == kMsgGoal) w.u16(a).u16(b); // a direction uses all of 0..255
 		g_.custom(w);
 	}
 	void flush_input() {

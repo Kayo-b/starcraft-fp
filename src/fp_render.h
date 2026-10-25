@@ -97,13 +97,18 @@ public:
 	}
 
 	// Snapshot visible units and preload their sprites (must run before render(); render() only reads).
-	void update_units() {
-		units_.clear();
+	// between (0..1): how far the display is from the previous simulation frame to the current one. The simulation moves
+	// units 24 times a second, so drawn where it has them they move in steps on a faster screen; drawn on their way from
+	// the previous frame's position they move smoothly, at most one frame (42 ms) behind. 1 (default): exactly where the
+	// simulation has them.
+	void update_units(double between = 1) {
+		units_.clear(); between = std::max(0.0, std::min(1.0, between));
 		for (auto u : ptr(st_.visible_units)) {
+			auto at = track(u, between); // also for units in the fog: one that comes out of it is drawn on its way
 			// fog of war: other players' units only while the viewer's units see them (neutral units always stay)
 			if (viewer_ >= 0 && u->owner < 8 && u->owner != viewer_ && !(u->sprite->visibility_flags & (1 << viewer_))) continue;
 			auto& d = u->unit_type->dimensions; auto* mi = u->sprite->main_image;
-			units_.push_back({(double)u->sprite->position.x, (double)u->sprite->position.y, (d.from.x + d.to.x + 1) / 2.0, (double)(d.from.y + d.to.y + 1),
+			units_.push_back({at.first, at.second, (d.from.x + d.to.x + 1) / 2.0, (double)(d.from.y + d.to.y + 1),
 				u->owner, (int)u->unit_type->id, (int)mi->image_type->id, (int)mi->frame_index, (mi->flags & image_t::flag_horizontally_flipped) != 0,
 				(int)fn_.direction_index(u->heading), (mi->flags & image_t::flag_has_directional_frames) != 0, (int)mi->frame_index_base, u});
 			{ auto& b = units_.back(); double mh = u->unit_type->hitpoints.raw_value ? u->unit_type->hitpoints.raw_value / 256.0 : 0, ms = u->unit_type->shield_points;
@@ -606,6 +611,20 @@ private:
 	ModelLibrary* models_ = nullptr; int model_mode_ = kModelsBuildings; int viewer_ = -1;
 	struct StaticModel { const M3Model* m; double x, y, scale, yaw; int owner; };
 	std::vector<StaticModel> statics_;
+	// Per unit slot (unit_id index): the unit in it (raw id), the last frame seen, its position then and one frame before.
+	struct Track { uint16_t id = 0; int frame = -1; double x = 0, y = 0, px = 0, py = 0; };
+	static constexpr int kTrackGap = 4; static constexpr double kTrackJump = 64;
+	std::vector<Track> tracks_ = std::vector<Track>(2048);
+	// Where unit u is drawn: `between` of the way from its position on the previous simulation frame to the current one.
+	// A unit seen for the first time, after a gap of more than kTrackGap frames (left out of the snapshots, a fast replay)
+	// or after a jump (placed, not walked) is drawn where it is.
+	std::pair<double, double> track(const unit_t* u, double between) {
+		unit_id id = fn_.get_unit_id(u); Track& t = tracks_[id.index()];
+		double x = u->sprite->position.x, y = u->sprite->position.y; int f = st_.current_frame;
+		if (t.id != id.raw_value || t.frame > f || t.frame < f - kTrackGap) t = {id.raw_value, f, x, y, x, y};
+		else if (t.frame != f) { bool jump = std::hypot(x - t.x, y - t.y) > kTrackJump; t.px = jump ? x : t.x; t.py = jump ? y : t.y; t.x = x; t.y = y; t.frame = f; }
+		return {t.px + (t.x - t.px) * between, t.py + (t.y - t.py) * between};
+	}
 	// One screen-space triangle of a model, ready to rasterise: x, y, 1/depth and u/depth, v/depth, light per corner.
 	struct STri { float x[3], y[3], iz[3], uz[3], vz[3], l[3]; const M3Texture* tex; const M3Texture* emis; float emis_mult; bool alpha_test, two_sided; int id, owner; float minx, maxx; };
 	std::vector<STri> tris_;
