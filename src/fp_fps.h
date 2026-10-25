@@ -80,6 +80,7 @@ public:
 	}
 	unit_t* player() { return g_.fn().get_unit(heroes_[g_.owner()].id); }
 	unit_t* opponent() { return versus_ ? g_.fn().get_unit(heroes_[g_.enemy()].id) : nullptr; }
+	unit_t* hero(int slot) { return slot >= 0 && slot < 8 ? g_.fn().get_unit(heroes_[slot].id) : nullptr; } // a player's hero (nullptr: dead, or none)
 	bool alive() { return player() != nullptr; }
 	// Versus: frames until the local hero comes back (0 while it lives).
 	int respawn_in() { const Hero& h = heroes_[g_.owner()]; return alive() || h.respawn_at < 0 ? 0 : std::max(0, h.respawn_at - g_.frame()); }

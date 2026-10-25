@@ -186,7 +186,26 @@ client (command card, hotkeys) and no Remastered client (closed, no API; see the
   other one dark. Golden views unchanged (no viewer there). Not covered: nothing in the game's controls makes cloaked or burrowed
   units yet; the shimmer was checked on frames from the test, not in play; the free-movement shot rule is untested (only a
   modified client could send such a shot).
-- **N5** `todo` Internet play: a relay or NAT punching, reconnecting, a replay of the match (`sync.h` can save one).
+- **N5** `done` (as chosen 2026-10-25: a virtual private network for now, our own recordings; a relay and rejoining later).
+  Internet play: README instructions for Tailscale/ZeroTier (no code; the lobby's latency pick covers the extra round trip) and
+  port forwarding; not tried over the internet yet. Recordings (`fp_replay.h`, `.fpr`): the setup as the lobby leaves it (map
+  path and CRC, slots, players, random seed, FPS settings), every command of both players with the frame it took effect, the state
+  hash after every frame (~13 bytes a frame). OpenBW's own replays cannot hold this game (standard commands only; the heroes are
+  not made by commands) and its sync layer applies standard commands where we cannot see them, so a two-player game now sends
+  them as one of our messages (`kChanCmd`, `kProtocol` 5) and every command of either player is applied, and recorded, in one
+  place (`Game::apply`). A player leaving or dropping is OpenBW's own command, applied outside that stream: recorded where the
+  other game is seen gone (checked before each command and after each network poll), as that command. Playback
+  (`Game::open_recording`, `fp_play --watch FILE`): the same setup, the recorded commands on their frames, each frame's hash
+  compared ("went its own way at frame N"); 1 / 2 through a player's eyes (their hero, their fog of war), 0 all. Two-player games
+  record into `replays/` by default (`--no-record`, `--record FILE`; single player with `--record FILE`). Found and fixed: OpenBW's
+  lobby `sync()` can leave behind an expired 50 ms timer whose callback writes a local of the finished `sync()` (stack use after
+  return, AddressSanitizer, once over the 50 ms test relay); `NetServer::set_timeout` runs only the latest callback, as its one
+  timer intends (3 clean runs since). `fp_fogtest`'s cost check now times one thread, fastest of 15 alternated runs (another
+  program loading the machine made the multithreaded timing swing 3-9 ms). Tests: `fp_nettest` records sessions 1, 3, 4 and a
+  single-player FPS game and plays each back to its last frame, every frame's hash and the end (kills, deaths, winner) as in the
+  live game; multiplayer `--selftest-input` writes recordings, `--watch FILE --selftest-input` plays them (views switch, to the
+  end, as recorded). Not covered: our own relay, NAT traversal, rejoining after a drop; a recording of a game whose program
+  crashed ends at its last flushed frame (every 240 frames) without the 'e' record (plays as far as it goes).
 
 ## Verification (every milestone)
 - `make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=...` (plus `fp_terraintest` from M1).

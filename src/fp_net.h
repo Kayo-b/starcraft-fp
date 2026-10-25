@@ -71,6 +71,14 @@ struct WaitIndicator {
 struct NetServer : sync_server_asio_tcp {
 	static constexpr uint8_t kTag0 = 0xfe, kTag1 = 0xf9;
 	std::function<void(const void* h, data_loading::data_reader_le&)> own;
+	// OpenBW's server has one timer, and a new timeout replaces the last one; but a wait that has already expired when it is
+	// replaced still runs its callback at the next poll. sync() leaves such a wait behind (its 50 ms lobby wait, whose
+	// callback sets a local of sync()'s by reference), and that callback then wrote into a stack frame long gone
+	// (AddressSanitizer, over the 50 ms test relay). Only the latest callback runs here.
+	template<typename D, typename F> void set_timeout(D&& d, F&& f) {
+		uint64_t gen = ++timeout_gen_;
+		sync_server_asio_tcp::set_timeout(std::forward<D>(d), [this, gen, f = std::forward<F>(f)]() { if (gen == timeout_gen_) f(); });
+	}
 	template<typename F> void set_on_message(const void* h, F&& f) {
 		sync_server_asio_tcp::set_on_message(h, [this, h, f = std::forward<F>(f)](const void* data, size_t n) mutable {
 			const uint8_t* d = (const uint8_t*)data;
@@ -78,6 +86,8 @@ struct NetServer : sync_server_asio_tcp {
 			f(data, n);
 		});
 	}
+private:
+	uint64_t timeout_gen_ = 0;
 };
 
 // The command stream of one player: OpenBW replay-format actions (applied with read_action) and our own custom
@@ -185,7 +195,6 @@ public:
 		return true;
 	}
 
-	void send_action(const ActionWriter& w) { funcs_->input_action(server_, w.buf, w.n); }
 	void send_custom(const ActionWriter& w) { funcs_->send_custom_action(server_, w.buf, w.n); }
 	// Leave politely: the other game sees this player leave on a known frame.
 	void leave() { if (funcs_ && sync_st_.game_started && !left_) { left_ = true; try { funcs_->leave_game(server_); } catch (const std::exception&) {} } }

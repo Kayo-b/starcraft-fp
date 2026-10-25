@@ -82,8 +82,32 @@ picks the latency from it (localhost and LAN: 2 frames, 83 ms; a 100 ms round tr
   seen in the tests). "Waiting for NAME..." shows when the game has stood still for 0.3 s, or spent 40% of the last second
   waiting for the other one (a game that keeps stopping), and stays for a second after (it does not blink); "NAME left the game" or
   "Lost the connection to NAME" when the other game is gone.
-- Not yet: more than two players (`sync.h` takes one peer), NAT traversal (the joiner must reach the host's TCP port: forward it on the
-  host's router), reconnecting. Nothing in the game's controls makes cloaked or burrowed units yet (no tech or spell commands).
+- Not yet: more than two players (`sync.h` takes one peer), our own relay or NAT traversal (see "Over the internet"), rejoining a
+  game after a dropped connection (a short Wi-Fi hiccup is fine: TCP resends, and OpenBW waits 60 s for the other game). Nothing in
+  the game's controls makes cloaked or burrowed units yet (no tech or spell commands).
+
+#### Over the internet
+The joiner must reach the host's TCP port (6112, or `--host PORT`). Two ways, neither needs anything from this program (not tried
+over the internet yet):
+- **A virtual private network** (easiest): both install [Tailscale](https://tailscale.com) (or ZeroTier) and join the same network
+  (Tailscale: the same account, or the host shares their machine with the joiner). The host runs `./run.sh --host`; the joiner
+  `./run.sh --join 100.x.y.z`, the host's network address (`tailscale ip -4` on the host). Traffic goes straight between the two
+  computers when the routers allow it, through the service's relays otherwise; either way the host's lobby measures the round
+  trip and picks the latency (the status line says which).
+- **Port forwarding**: the host's router forwards TCP 6112 to the host's computer; the joiner uses the host's public address. It
+  does not work behind carrier-grade NAT (some mobile and fibre providers), and it shows the joiner the host's address.
+Either way the host's firewall must let TCP 6112 in, both players need the same map file and the same version of this program
+(both checked at the start).
+
+#### Recordings
+Every two-player game is recorded into `replays/<date>_<time>_<you>-vs-<them>.fpr` (`--record FILE` names it, `--no-record` skips
+it; `--record FILE` also records a single-player game). Watch one with `./run.sh --watch replays/FILE.fpr`: 1 / 2 see the game
+through a player's eyes (following their hero, with their fog of war), 0 all of it with a free camera; TAB, F, P, `=`/`-` and R as
+in a replay. A recording holds the setup the lobby left (map, slots, random seed, FPS settings), every command of both players on
+the frame it took effect, and the state hash after every frame: playback runs the same game and stops with a message where its
+state differs (none seen in the tests). About 13 bytes a frame (~400 KB for 20 minutes). It needs the map file it was made on
+(checked; `--game MAP` if it has moved) and the same version of this program. The single-player `--selftest-input` changes its game
+outside the command stream (it spawns enemies), so a recording of it does not play back.
 
 ### Replay and game sandbox
 - **Replay** (`--replay FILE [--start-frame N]`): watch from inside the world; no orders.
@@ -117,11 +141,13 @@ state on every frame of a 2400-frame game with commands, a hero fight and respaw
 latency; a deliberate state change found on the next frame; a player leaving; free movement with shooting, and the camera's
 prediction matching the simulation on every frame; over a relay holding everything 50 ms each way, the latency picked from the
 round trip and both games, paced as the window paces them, keeping up with the clock, and falling behind with a latency too short;
-the latency table and the waiting indicator's timing; built with AddressSanitizer), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
+the latency table and the waiting indicator's timing; every game recorded and played back, the full game, the one a player leaves and
+free movement, plus a single-player FPS game, each frame's state as recorded; built with AddressSanitizer), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
 Window tests (they open a window briefly): `fp_play ... --selftest-input` for replay, `--game MAP` and `--game MAP --fps --weapons MOD_DIR`
 (use `SDL_AUDIODRIVER=dummy` to stay silent); `--autotest` checks collision against OpenBW `is_walkable`. Multiplayer: start
 `--game MAP --host PORT --selftest-input` and `--game MAP --join 127.0.0.1:PORT --selftest-input` together; both must pass
-(add `--fps-move-shoot` to both for free movement: W walks the hero, the camera stays on it, releasing W stops it).
+(add `--fps-move-shoot` to both for free movement: W walks the hero, the camera stays on it, releasing W stops it). Each writes its
+recording into `replays/`; `--watch FILE --selftest-input` plays one: the views switch, it plays to its end, every frame as recorded.
 Golden views: `tools/golden.sh LABEL` renders fixed first-person views (`fp_view --spot K`: start locations, map centre,
 quarter points; four headings) of one stock map per tileset plus the demo replay into `out/golden/LABEL/*.png` contact sheets,
 to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset; `fp_view --heightmap F.ppm` the terrain model

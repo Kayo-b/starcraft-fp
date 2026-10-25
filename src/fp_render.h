@@ -173,6 +173,7 @@ public:
 	// Also: the terrain is dimmed where that player does not see (fog_at), and the other players' buildings they have seen
 	// stay where they were last seen until that spot is in sight again.
 	void set_viewer(int player) { viewer_ = player; fog_.clear(); memory_.clear(); }
+	int viewer() const { return viewer_; }
 	int model_mode() const { return models_ ? model_mode_ : 0; }
 	// A model placed in the world independently of the simulation (fp_view's model views): not pickable.
 	void add_static_model(const M3Model* m, double x, double y, double px_per_unit, double yaw_deg, int owner) {

@@ -6,6 +6,8 @@
 //   3. a player leaves: the other game goes on alone and its player wins.
 //   4. free movement (--fps-move-shoot): the heroes walk on input commands and shoot while walking; both games agree on
 //      every frame, and the camera's view of each hero, run ahead of the simulation, is exactly where the hero ends up.
+// Sessions 1, 3 and 4 also record each game (fp_replay.h) and play the recordings back: every frame's state as recorded,
+// the end the same as the live game's; a single-player FPS game is recorded and played back too.
 //   5. a slow network (a relay holding everything for 50 ms each way): the host measures the round trip in the lobby,
 //      picks the latency from it and the joiner takes it; both games, paced as the window paces them, keep up with the
 //      clock. 6. the same network with a latency too short for it: the games wait on each other and fall behind.
@@ -14,6 +16,7 @@
 #include <arpa/inet.h>
 #include <atomic>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -87,6 +90,7 @@ struct Peer {
 	bool paced = false;               // step as fp_play's window does: on the clock, a look at the network per rendered frame
 	double elapsed = 0, waited = 0;   // paced: seconds from the first step to the last, and spent with a step due but blocked
 	bool direct = false;              // free movement (session 4)
+	std::string rec;                  // record the game into this file
 	// session 4: OpenBW walks the hero to the other one (trigger free), free movement once they are close
 	bool free = false; int direct_since = 0, compared = 0, mispredicted = 0; double walked = 0; std::pair<double, double> last_at{-1, -1};
 	struct Prediction { double x, y; int id; };
@@ -98,6 +102,7 @@ static void run(Peer& p, const std::string& data, const std::string& map, int po
 	try {
 		NetOptions o; o.host = p.host; o.port = p.via && !p.host ? p.via : port; o.latency = p.host ? p.latency : 0; o.wait_seconds = 20; o.name = p.name;
 		p.g.open_net(data, map, p.race, o, [&](const std::string&) {}, Fps::settings_hash(200, 200, 90, p.direct));
+		if (!p.rec.empty() && !p.g.record(p.rec, {1, 1, 200, 200, 90, p.direct ? 1 : 0})) { p.error = "cannot write " + p.rec; return; }
 		p.f = std::make_unique<Fps>(p.g, 7, 200, 200, 90, p.direct, true);
 		if (!p.f->start()) { p.error = "no hero"; return; }
 		auto t0 = std::chrono::steady_clock::now();
@@ -145,11 +150,34 @@ static int first_difference(const Peer& a, const Peer& b) {
 	return -1;
 }
 
+// A recording played back headless to its end (as fp_play --watch does): frames played, why it stopped early, and the end.
+struct Played { int frames = 0; std::string failure; uint32_t hash = 0; int kills = 0, deaths = 0; bool won = false; };
+static Played play_back(const std::string& data, const std::string& path) {
+	Played r;
+	try {
+		Game g; g.open_recording(data, path);
+		const auto& set = g.recording()->setup().settings;
+		Fps f(g, 7, set.at(2), set.at(3), set.at(4), set.at(5) != 0, set.at(1) != 0); f.start();
+		while (g.step()) { f.tick(); ++r.frames; }
+		r.failure = g.failure(); r.hash = g.state_hash(); r.kills = f.kills; r.deaths = f.deaths; r.won = g.won();
+	} catch (const std::exception& e) { r.failure = e.what(); }
+	return r;
+}
+static void check_playback(Peer& p, const std::string& data, const char* who) {
+	p.g.stop_recording();
+	Played r = play_back(data, p.rec);
+	check(r.failure.empty() && r.frames == (int)p.hashes.size() && !p.hashes.empty() && r.hash == p.hashes.back() && r.kills == p.f->kills && r.deaths == p.f->deaths,
+	      bwgame::format("the %s's recording plays back: %d of %d frames, each as recorded, the same end (hero kills:deaths %d:%d)%s", who, r.frames, (int)p.hashes.size(), r.kills, r.deaths, r.failure.empty() ? "" : (": " + r.failure).c_str()).c_str());
+}
+
 int main(int argc, char** argv) {
 	if (argc < 3) { std::cerr << "usage: fp_nettest DATA_DIR MAP.scm [PORT]\n"; return 2; }
 	std::cout << std::unitbuf;
 	const std::string data = argv[1], map = argv[2];
 	int port = argc > 3 ? atoi(argv[3]) : 47000 + (int)(getpid() % 2000);
+
+	const std::string recs = (std::filesystem::temp_directory_path() / ("fp_nettest_" + std::to_string(getpid()))).string();
+	std::filesystem::create_directories(recs);
 
 	// 0. Without a network.
 	std::cout << "latency and waiting indicator\n";
@@ -180,10 +208,28 @@ int main(int argc, char** argv) {
 		check(r5.second == 3 && r5.first > 3 * 1.1 && r5.first < 3 * 1.4, bwgame::format("waiting indicator: a half-second stop shows it once, for about a second after the stop (%d times, %.2f s each)", r5.second, r5.second ? r5.first / r5.second : 0.0).c_str());
 	}
 
+	std::cout << "a single-player game recorded and played back\n";
+	{ // FPS waves with free movement: walking in circles, shooting what is in range, the waves' own AI
+		Peer p{"solo", true, race_t::terran}; p.rec = recs + "/solo.fpr"; p.direct = true;
+		try {
+			p.g.open(data, map, race_t::terran, race_t::zerg, 1, true);
+			if (!p.g.record(p.rec, {1, 0, 200, 200, 90, 1})) throw std::runtime_error("cannot write " + p.rec);
+			p.f = std::make_unique<Fps>(p.g, 7, 200, 200, 90, true); p.f->start();
+			for (int i = 0; i < 1200 && p.f->alive(); ++i) {
+				double a = i * 0.05; p.f->drive(std::cos(a), std::sin(a));
+				unit_t* me = p.f->player(); unit_t* foe = me ? p.g.nearest(me->sprite->position.x, me->sprite->position.y, [&](unit_t* u) { return p.f->is_enemy(u); }) : nullptr;
+				if (foe && p.f->in_range(foe)) p.f->fire(foe);
+				p.g.step(); p.f->tick(); p.hashes.push_back(p.g.state_hash());
+			}
+		} catch (const std::exception& e) { p.error = e.what(); }
+		check(p.error.empty() && p.f && p.f->kills > 0, "the game ran (" + std::to_string(p.hashes.size()) + " frames, " + std::to_string(p.f ? p.f->kills : 0) + " kills" + (p.error.empty() ? "" : ", " + p.error) + ")");
+		if (p.f) check_playback(p, data, "single player");
+	}
+
 	// 1. A full game.
 	std::cout << "session 1: a full game (port " << port << ")\n";
 	{
-		Peer h{"host", true, race_t::terran}, j{"joiner", false, race_t::protoss};
+		Peer h{"host", true, race_t::terran}, j{"joiner", false, race_t::protoss}; h.rec = recs + "/s1_host.fpr"; j.rec = recs + "/s1_joiner.fpr";
 		const int kOrderFrame = 30, kFightFrame = 60, kFrames = 2400;
 		std::atomic<int> train_frame_h{-1}, train_frame_j{-1};
 		auto script = [&](Peer& p) {
@@ -222,6 +268,7 @@ int main(int argc, char** argv) {
 		check(fh.alive() || fh.respawn_in() > 0, "the host's hero is alive or about to come back (" + std::to_string(fh.respawn_in()) + " frames)");
 		bool came_back = (fh.deaths == 0 || fh.alive() || fh.respawn_in() < Fps::kRespawnFrames) && (fj.deaths == 0 || fj.alive() || fj.respawn_in() < Fps::kRespawnFrames);
 		check(came_back, "dead heroes come back after " + std::to_string(Fps::kRespawnFrames) + " frames");
+		check_playback(h, data, "host"); check_playback(j, data, "joiner");
 		// The game runs at 24 frames per second; over localhost the lockstep alone must be far faster than that.
 		check(kFrames / secs > 240, bwgame::format("lockstep over localhost runs at %.0f frames per second (lobby included; the game needs 24)", kFrames / secs).c_str());
 	}
@@ -241,7 +288,7 @@ int main(int argc, char** argv) {
 	// 3. A player leaves.
 	std::cout << "session 3: the joiner leaves (latency picked from the round trip)\n";
 	{
-		Peer h{"host", true, race_t::protoss}, j{"joiner", false, race_t::zerg}; h.latency = 0;
+		Peer h{"host", true, race_t::protoss}, j{"joiner", false, race_t::zerg}; h.latency = 0; h.rec = recs + "/s3_host.fpr";
 		std::atomic<bool> joiner_left{false};
 		auto script = [&](Peer& p) {
 			if (!p.host && p.g.frame() == 120 && !joiner_left) { p.g.leave(); joiner_left = true; throw std::runtime_error("left"); }
@@ -254,6 +301,8 @@ int main(int argc, char** argv) {
 		check(h.error.empty() && (int)h.hashes.size() == 600, "the host's game goes on alone (" + std::to_string(h.hashes.size()) + " frames" + (h.error.empty() ? "" : ", " + h.error) + ")");
 		check(h.g.opponent_left() && !h.g.opponent_dropped(), "the host's game knows the other player left (and did not just drop)");
 		check(h.g.won(), "the host wins (melee rules)");
+		{ h.g.stop_recording(); Played r = play_back(data, h.rec);
+		  check(r.failure.empty() && r.frames == (int)h.hashes.size() && r.hash == h.hashes.back() && r.won, bwgame::format("the host's recording plays back with the joiner leaving on its frame: %d of %d frames, the host wins%s", r.frames, (int)h.hashes.size(), r.failure.empty() ? "" : (": " + r.failure).c_str()).c_str()); }
 		Net& hn = *h.g.network();
 		check(hn.lobby_samples() >= Net::kPingSamples && hn.lobby_rtt_ms() < 5 && h.g.latency() == 2 && j.g.latency() == 2 && j.g.network()->latency_from_host(),
 		      bwgame::format("over localhost the host measures a round trip of %.2f ms (%d pings) and picks latency 2; the joiner takes it (%d, %d)", hn.lobby_rtt_ms(), hn.lobby_samples(), h.g.latency(), j.g.latency()).c_str());
@@ -262,7 +311,7 @@ int main(int argc, char** argv) {
 	// 4. Free movement.
 	std::cout << "session 4: free movement (walk and shoot)\n";
 	{
-		Peer h{"host", true, race_t::terran}, j{"joiner", false, race_t::protoss}; h.direct = j.direct = true;
+		Peer h{"host", true, race_t::terran}, j{"joiner", false, race_t::protoss}; h.direct = j.direct = true; h.rec = recs + "/s4_host.fpr"; j.rec = recs + "/s4_joiner.fpr";
 		const int kFrames = 2400;
 		auto script = [&](Peer& p) {
 			Game& g = p.g; Fps& f = *p.f; int fr = g.frame(); unit_t* me = f.player(); unit_t* foe = f.opponent();
@@ -296,6 +345,7 @@ int main(int argc, char** argv) {
 		Fps& fh = *h.f; Fps& fj = *j.f;
 		check(fh.shots > 0 && fj.shots > 0, "both heroes shot while walking (" + std::to_string(fh.shots) + " and " + std::to_string(fj.shots) + " shots)");
 		check(fh.kills + fh.deaths > 0 && fh.kills == fj.deaths && fh.deaths == fj.kills, "the heroes fought and both games count the same deaths (" + std::to_string(fh.deaths) + ":" + std::to_string(fh.kills) + " / " + std::to_string(fj.kills) + ":" + std::to_string(fj.deaths) + ")");
+		check_playback(h, data, "host"); check_playback(j, data, "joiner");
 	}
 
 	// 5-6. A slow network: 50 ms each way, plus the wait for the other game's next look (the window's 60 Hz).
@@ -330,6 +380,7 @@ int main(int argc, char** argv) {
 		check(slowdown(h) > 1.04 && slowdown(j) > 1.04 && h.waited > 0.1 * h.elapsed && j.waited > 0.1 * j.elapsed, bwgame::format("the games wait on each other and fall behind the clock: %d frames in %.2f s and %.2f s (%.2f s due; waited %.2f s and %.2f s)", kPaced, h.elapsed, j.elapsed, (kPaced - 1) * sim_dt, h.waited, j.waited).c_str());
 	}
 
+	std::error_code ec; std::filesystem::remove_all(recs, ec);
 	std::cout << (failures ? "NETTEST FAILED" : "NETTEST PASSED") << "\n";
 	return failures ? 1 : 0;
 }

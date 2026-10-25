@@ -111,10 +111,11 @@ int main(int argc, char** argv) {
 
 		std::cout << "cost\n";
 		{ Renderer big(g.st(), g.fn(), assets, 640, 400); std::vector<uint32_t> bfb(640 * 400); Camera c; aim(c, theirs.x, theirs.y, 400);
-		  auto ms = [&]() { big.update_units(); big.render(c, nullptr, bfb.data()); auto t0 = std::chrono::steady_clock::now(); for (int i = 0; i < 20; ++i) big.render(c, nullptr, bfb.data());
-			return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 20; };
-		  double without = ms(); big.set_viewer(g.owner()); double with = ms();
-		  check(with < without * 1.5 + 0.5, bwgame::format("a 640x400 frame takes %.2f ms with the fog of war, %.2f ms without", with, without).c_str()); }
+		  // one render thread, the two alternated and the fastest of each taken: other work on the machine only slows a run down
+		  auto ms = [&](int viewer) { big.set_viewer(viewer); big.update_units(); auto t0 = std::chrono::steady_clock::now(); big.render(c, nullptr, bfb.data(), nullptr, 1);
+			return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+		  double without = 1e9, with = 1e9; for (int i = 0; i < 15; ++i) { without = std::min(without, ms(-1)); with = std::min(with, ms(g.owner())); }
+		  check(with < without * 1.4, bwgame::format("a 640x400 frame on one thread takes %.1f ms with the fog of war, %.1f ms without", with, without).c_str()); }
 		std::cout << "without a viewer (replays, single player)\n";
 		Renderer all(g.st(), g.fn(), assets, W, H); all.update_units();
 		const UnitView* av = nullptr; for (auto& v : all.units()) if (v.ptr == dt) av = &v;
