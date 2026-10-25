@@ -100,6 +100,8 @@ public:
 	void update_units() {
 		units_.clear();
 		for (auto u : ptr(st_.visible_units)) {
+			// fog of war: other players' units only while the viewer's units see them (neutral units always stay)
+			if (viewer_ >= 0 && u->owner < 8 && u->owner != viewer_ && !(u->sprite->visibility_flags & (1 << viewer_))) continue;
 			auto& d = u->unit_type->dimensions; auto* mi = u->sprite->main_image;
 			units_.push_back({(double)u->sprite->position.x, (double)u->sprite->position.y, (d.from.x + d.to.x + 1) / 2.0, (double)(d.from.y + d.to.y + 1),
 				u->owner, (int)u->unit_type->id, (int)mi->image_type->id, (int)mi->frame_index, (mi->flags & image_t::flag_horizontally_flipped) != 0,
@@ -128,6 +130,9 @@ public:
 	// 0 sprites only, 1 buildings and minerals, 2 also units with a model (experimental: rest pose, no animation yet).
 	enum ModelMode { kModelsOff = 0, kModelsBuildings = 1, kModelsUnits = 2 };
 	void set_model_mode(int mode) { model_mode_ = std::max(0, std::min(2, mode)); }
+	// Whose eyes the world is seen through: other players' units in that player's fog are left out (also for picking).
+	// -1 (default): everything, as in a replay.
+	void set_viewer(int player) { viewer_ = player; }
 	int model_mode() const { return models_ ? model_mode_ : 0; }
 	// A model placed in the world independently of the simulation (fp_view's model views): not pickable.
 	void add_static_model(const M3Model* m, double x, double y, double px_per_unit, double yaw_deg, int owner) {
@@ -367,7 +372,7 @@ private:
 		double best = -2; sx = nx; sy = ny;
 		for (auto& d : dirs) { double dot = d[0] * nx + d[1] * ny; if (dot > best) { best = dot; sx = d[0]; sy = d[1]; } }
 	}
-	float depth_at(int x, int y) const { x = std::max(0, std::min(W_ - 1, x)); y = std::max(0, std::min(H_ - 1, y)); return zbuf_[(size_t)y * W_ + x]; }
+	float depth_at(int x, int y) const { if (zbuf_.empty()) return kFar; /* before the first render() */ x = std::max(0, std::min(W_ - 1, x)); y = std::max(0, std::min(H_ - 1, y)); return zbuf_[(size_t)y * W_ + x]; }
 
 	// One screen column: march the ray through the heightfield front to back. A cell's top is drawn where it lies below
 	// the eye, its front face where it rises above the cell before; `top` is the highest row drawn so far, so nearer
@@ -598,7 +603,7 @@ private:
 	Terrain terrain_; int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_; double avg_[3] = {0, 0, 0};
 	std::vector<UnitView> units_; std::vector<float> zbuf_; // per-pixel depth of the terrain and models (kFar for sky and fog)
 	std::vector<int32_t> idbuf_;                             // per pixel: the units_ index of the model drawn there, -2 static model, -1 none
-	ModelLibrary* models_ = nullptr; int model_mode_ = kModelsBuildings;
+	ModelLibrary* models_ = nullptr; int model_mode_ = kModelsBuildings; int viewer_ = -1;
 	struct StaticModel { const M3Model* m; double x, y, scale, yaw; int owner; };
 	std::vector<StaticModel> statics_;
 	// One screen-space triangle of a model, ready to rasterise: x, y, 1/depth and u/depth, v/depth, light per corner.

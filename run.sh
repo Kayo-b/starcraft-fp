@@ -8,6 +8,8 @@
 #   ./run.sh --fps --fps-move-shoot   FPS wave mode with free FPS-style movement (walk and shoot at once; experimental)
 #   ./run.sh --game MAP               live RTS-style sandbox on a map (add --fps for the wave mode there)
 #   ./run.sh --game "(2)The Small Divide"   a map name alone is looked up in MAPS_DIR (.scm/.scx optional)
+#   ./run.sh --host [PORT]            1v1 over the network on GAME_MAP (or --game MAP): wait for the other player
+#   ./run.sh --join HOST[:PORT]       ... and join it from the other computer (same map file, same options)
 #   ./run.sh --no-capture             leave the mouse pointer alone
 #
 # Every other argument is passed to fp_play (e.g. --race R, --enemy R, --fire-rate N, --range N, --speed N, --no-vsync; see README).
@@ -49,9 +51,9 @@ for a in "$@"; do
 done
 set -- ${args[@]+"${args[@]}"}
 
-# --fps: FPS wave mode, on GAME_MAP unless a map was given; the gun art/sounds come from WEAPONS_DIR when it exists.
+# --fps (and the 1v1 --host/--join): on GAME_MAP unless a map was given; the gun art/sounds come from WEAPONS_DIR when it exists.
 has_input=0; fps=0; has_weapons=0
-for a in "$@"; do case "$a" in --replay|--map|--game) has_input=1 ;; --fps) fps=1 ;; --weapons) has_weapons=1 ;; esac; done
+for a in "$@"; do case "$a" in --replay|--map|--game) has_input=1 ;; --fps|--host|--join) fps=1 ;; --weapons) has_weapons=1 ;; esac; done
 if [ "$fps" = 1 ] && [ "$has_input" = 0 ]; then
 	[ -f "$GAME_MAP" ] || { echo "run.sh: map not found: $GAME_MAP (set GAME_MAP)" >&2; exit 1; }
 	set -- --game "$GAME_MAP" "$@"; has_input=1

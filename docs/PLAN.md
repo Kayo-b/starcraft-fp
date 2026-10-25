@@ -114,6 +114,30 @@ Status: `todo`, `doing`, `done`.
 - **C5** Enemy build order and attack waves; win/lose by the main building.
 - **C6** Tactical map while TAB is held.
 
+### Phase 4 — multiplayer (`fp-multiplayer`)
+Asked for 2026-10-25: keep the game at the FPS level plus the RTS commands and production that exist; no full StarCraft
+client (command card, hotkeys) and no Remastered client (closed, no API; see the 2026-10-22 assessment). OpenBW's `sync.h`
+(lockstep over TCP, two players) is the network layer.
+- **N1** `done` 1v1 over TCP (`--host [PORT]` / `--join HOST[:PORT]`, `src/fp_net.h`). Lobby inside the map load (OpenBW's
+  setup callback, before starting units exist): slots, races, host starts, melee start for both. Every command goes through
+  one path (`Game::command`/`custom`, replay-format actions): single player applies it at once (the gametest checksum is
+  unchanged), multiplayer sends it to both games for the same frame. The FPS layer is per player (`Fps` versus mode): a hero
+  each, trigger and out-of-range misses as commands, respawn after 10 s, weapon tuning once per weapon. Non-blocking lockstep
+  in the render loop; F switches between the hero and commanding the base (the hero fights on its own meanwhile). Start
+  checks (version, map CRC, latency, tuning) and a state hash every frame ("out of sync at frame N"); TCP_NODELAY (without it
+  localhost lockstep ran at ~50 frames/s, with it ~4600). Fog of war for the other player's units (`Renderer::set_viewer`).
+  Found and fixed: `Renderer::depth_at` read the depth buffer before the first render (crash when an enemy is in view on
+  frame 0, which only multiplayer has); OpenBW's TCP server frees its client list before its io_service, so a read still
+  pending at exit released a client into freed memory (abort on quit in 4 of 4 window runs; `Net::~Net` closes the
+  sockets and runs the aborted handlers first). `fp_nettest` (AddressSanitizer build: the release build passed with the
+  corruption); multiplayer `--selftest-input` (both games).
+- **N2** `todo` Free movement in multiplayer: hero physics per simulation frame in fixed point (OpenBW's `fp8`), the move
+  direction as a command; local prediction of the own hero's camera to hide the latency.
+- **N3** `todo` Feel over a real network: camera interpolation between frames, latency picked from the measured round trip,
+  a "waiting" indicator that does not flicker.
+- **N4** `todo` Fog of war: remembered enemy buildings, cloaked units, terrain dimmed outside vision.
+- **N5** `todo` Internet play: a relay or NAT punching, reconnecting, a replay of the match (`sync.h` can save one).
+
 ## Verification (every milestone)
 - `make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=...` (plus `fp_terraintest` from M1).
 - Window self-tests with `SDL_AUDIODRIVER=dummy`: `fp_play --game MAP --fps --weapons MOD_DIR --selftest-input`,
