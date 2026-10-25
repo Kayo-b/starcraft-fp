@@ -3,9 +3,11 @@
 #include "bwgame.h"
 #include "dir_loader.h"
 #include <cstring>
+#include <cctype>
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace fp {
@@ -190,16 +192,37 @@ public:
 		}
 		return it->second.get();
 	}
-	// nullptr when the file is missing or does not match the verified layout.
+	// nullptr when the file is missing or does not match the verified layout. An image without an anim file of its own
+	// draws the one of its GRP (anim_of).
 	const AnimSprite* sprite(int image_id) {
+		if (auto a = alias_.find(image_id); a != alias_.end()) image_id = a->second;
 		auto it = sprites_.find(image_id);
 		if (it == sprites_.end()) {
 			AnimSprite sp;
 			try { a_vector<uint8_t> buf; files_(buf, bwgame::format("anim/main_%03d.anim", image_id)); sp.load(std::vector<uint8_t>(buf.begin(), buf.end())); } catch (const std::exception&) {}
-			if (!sp.ok) missing_.insert(image_id);
+			if (!sp.ok) { int a = anim_of(image_id); if (a != image_id) { alias_[image_id] = a; return sprite(a); } missing_.insert(image_id); }
 			it = sprites_.emplace(image_id, std::move(sp)).first;
 		}
 		return it->second.ok ? &it->second : nullptr;
+	}
+	// Images sharing a GRP share one anim file: the first image with that GRP, names compared ignoring case as on Windows
+	// (arr/images.dat, arr/images.tbl; tools/hd_units.py does the same). The Dark Templar is main_129's art (the hero's),
+	// the Command Center main_063's, the Lurker main_920's. The image itself when the tables are missing.
+	int anim_of(int image_id) {
+		if (!grp_loaded_) {
+			grp_loaded_ = true;
+			try {
+				a_vector<uint8_t> dat, tbl; files_(dat, "arr/images.dat"); files_(tbl, "arr/images.tbl");
+				NameTable names; names.load(std::vector<uint8_t>(tbl.begin(), tbl.end()));
+				const size_t n = 999; std::map<std::string, int> first;
+				if (dat.size() >= n * 4) for (size_t i = 0; i < n; ++i) {
+					uint32_t g = dat[i * 4] | dat[i * 4 + 1] << 8 | dat[i * 4 + 2] << 16 | (uint32_t)dat[i * 4 + 3] << 24;
+					std::string k = g ? names.unit((int)g - 1) : std::string(); for (char& c : k) c = (char)std::tolower((unsigned char)c);
+					grp_first_.push_back(k.empty() ? (int)i : first.emplace(k, (int)i).first->second);
+				}
+			} catch (const std::exception&) { grp_first_.clear(); }
+		}
+		return image_id >= 0 && image_id < (int)grp_first_.size() ? grp_first_[image_id] : image_id;
 	}
 	// The classic SD terrain art for this tileset (loaded once).
 	const SdTiles* sd() {
@@ -218,6 +241,7 @@ public:
 
 	// Lookup only (never loads), so it is safe to call from render threads after update_units() preloaded the sprites.
 	const AnimSprite* sprite_cached(int image_id) const {
+		if (auto a = alias_.find(image_id); a != alias_.end()) image_id = a->second;
 		auto it = sprites_.find(image_id);
 		return (it != sprites_.end() && it->second.ok) ? &it->second : nullptr;
 	}
@@ -234,6 +258,7 @@ private:
 	std::map<int, AnimSprite> sprites_;
 	std::map<int, std::unique_ptr<SdTiles>> sd_;
 	NameTable names_; bool names_loaded_ = false; std::set<int> missing_;
+	std::map<int, int> alias_; std::vector<int> grp_first_; bool grp_loaded_ = false; // anim_of
 public:
 	// Image ids whose anim/main_NNN.anim was missing or unreadable (those units draw as flat player-coloured boxes).
 	const std::set<int>& missing_images() const { return missing_; }

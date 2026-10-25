@@ -65,7 +65,13 @@ picks the latency from it (localhost and LAN: 2 frames, 83 ms; a 100 ms round tr
   with the hero selected, goes back into it.
 - Victory and defeat follow StarCraft's melee rules (a player who loses every building is defeated). Q leaves the game (the other
   player wins and their game goes on). Pause, sim speed and restart are off.
-- Fog of war: the other player's units are drawn, and can be targeted, only where your units see them; neutral units always.
+- Fog of war, as StarCraft draws it for you: the other player's units are drawn, and can be targeted, only where your units see
+  them (neutral units always). The terrain, and what stands on it, is drawn at full brightness where you see, dimmed where you have
+  seen before, darker where you never have; OpenBW refreshes vision every ~4 s, and the change fades in a quarter second. An enemy
+  building you have seen stays drawn, dimmed, where you saw it (not a target) until that spot is in sight again, even if it was
+  destroyed meanwhile. Cloaked units: an enemy's, undetected, is a shimmer you cannot target (burrowed ones are not drawn at all);
+  detected (a Missile Turret, Photon Cannon or Spore Colony near it, or an Observer, Science Vessel or Overlord), and your own, are
+  drawn see-through. Free-movement shots at an undetected unit do nothing.
 - Options: `--race R`, `--name NAME` (default `$USER`), `--latency N|auto` on the host (1..8 frames; default auto, from the round
   trip; a joiner's is ignored). The host waits for a player as long as it takes; a joiner retries for a minute.
 - HUD, top right: the latency and the ping, the round trip during the game. The ping includes the wait until each game next reads the
@@ -77,7 +83,7 @@ picks the latency from it (localhost and LAN: 2 frames, 83 ms; a 100 ms round tr
   waiting for the other one (a game that keeps stopping), and stays for a second after (it does not blink); "NAME left the game" or
   "Lost the connection to NAME" when the other game is gone.
 - Not yet: more than two players (`sync.h` takes one peer), NAT traversal (the joiner must reach the host's TCP port: forward it on the
-  host's router), reconnecting, remembered enemy buildings in the fog, cloaked units shown as such.
+  host's router), reconnecting. Nothing in the game's controls makes cloaked or burrowed units yet (no tech or spell commands).
 
 ### Replay and game sandbox
 - **Replay** (`--replay FILE [--start-frame N]`): watch from inside the world; no orders.
@@ -104,7 +110,9 @@ picks the latency from it (localhost and LAN: 2 frames, 83 ms; a 100 ms round tr
 ## Tests
 `make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=.../W40K_Boltgun_Doom_a0.9.1` runs the headless suites: `fp_terraintest` (the terrain
 model against OpenBW's walkability and ground heights; `TERRAIN_MAPS=...` adds maps), `fp_gametest` (RTS orders, determinism),
-`fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death, units drawn between frames), `fp_nettest` (two games in two threads over localhost TCP: the same
+`fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death, units drawn between frames), `fp_fogtest` (the fog of war drawn
+for one player: terrain brightness and its fade, a building remembered and forgotten, cloaked and burrowed units, detection,
+the cost per frame; a third argument writes its frames as PPMs), `fp_nettest` (two games in two threads over localhost TCP: the same
 state on every frame of a 2400-frame game with commands, a hero fight and respawns; commands landing on the same frame in both after the
 latency; a deliberate state change found on the next frame; a player leaving; free movement with shooting, and the camera's
 prediction matching the simulation on every frame; over a relay holding everything 50 ms each way, the latency picked from the
@@ -172,7 +180,10 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   frames from offset 8 as `[u16,u16,u16 w,u16 h,u32 size,DDS]`; every frame is a 128x128 DXT1 DDS (size 8,320). Tile
   index = OpenBW `tiles_mega_tile_index`. Checked: parsing consumes the file exactly; a top-down render is seamless.
 - `anim/main_NNN.anim` (NNN = OpenBW main image id): `ANIM`, version 0x204, 7 layers (diffuse DXT5, bright, teamcolor DXT1,
-  emissive, normal, specular, ao_depth), one sprite record @0x14c, 16-byte frame records `x,y,xoff,yoff,w,h`.
+  emissive, normal, specular, ao_depth), one sprite record @0x14c, 16-byte frame records `x,y,xoff,yoff,w,h`. An image with no
+  file of its own shares the one of the first image with the same GRP (`arr/images.dat`, `arr/images.tbl`, names ignoring case):
+  129 of the 131 such images, the Command Center (main_063) and the Dark Templar (main_129) among them; the two left are a Jungle
+  doodad (651) and the Medic's healing effect (968).
   HD pixels are 4x SD pixels (assumed from the tile ratio; billboard sizes look right but this is not verified).
 - Frame choice for directional images follows OpenBW `set_image_heading`: `off=(dir+4)/8`, mirrored+flipped above 16;
   here `dir` is the unit heading relative to the camera bearing (derived, not yet validated against a known view).

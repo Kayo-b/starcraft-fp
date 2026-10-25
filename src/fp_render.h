@@ -9,6 +9,7 @@
 #include "fp_models.h"
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <thread>
 #include <vector>
 
@@ -25,9 +26,13 @@ struct UnitView {
 	double x, y, r, hgt; // position (px), half-width, bounding box height
 	int owner, type, image, frame; bool flip;
 	int heading; bool directional; int frame_base;
-	const unit_t* ptr;
+	const unit_t* ptr; // null for what the viewer cannot target: a building remembered in the fog, an undetected cloaked unit
 	double hp_frac = 1, shield_frac = 0; // 0..1 of the unit type's maximum; shield_frac is 0 for units without shields
 	const M3Model* model = nullptr; double mscale = 0, myaw = 0; // drawn as this 3D model (px per model unit, yaw) instead of a sprite
+	// Fog of war: brightness where it stands (Renderer::fog_at), and how it is drawn: plain, see-through (a cloaked unit
+	// the viewer sees: its own, or detected), or as a shimmer (an enemy's cloaked unit, undetected).
+	enum Look { kPlain, kSeeThrough, kShimmer };
+	double dim = 1; int look = kPlain;
 };
 
 // What to highlight on top of the scene.
@@ -100,23 +105,33 @@ public:
 	// between (0..1): how far the display is from the previous simulation frame to the current one. The simulation moves
 	// units 24 times a second, so drawn where it has them they move in steps on a faster screen; drawn on their way from
 	// the previous frame's position they move smoothly, at most one frame (42 ms) behind. 1 (default): exactly where the
-	// simulation has them.
-	void update_units(double between = 1) {
+	// simulation has them. dt: seconds since the last call, for the fog of war's fade (default: no fade).
+	void update_units(double between = 1, double dt = 1e9) {
 		units_.clear(); between = std::max(0.0, std::min(1.0, between));
+		update_fog(dt);
+		const int bit = viewer_ >= 0 ? 1 << viewer_ : 0; ++memory_tick_;
 		for (auto u : ptr(st_.visible_units)) {
 			auto at = track(u, between); // also for units in the fog: one that comes out of it is drawn on its way
 			// fog of war: other players' units only while the viewer's units see them (neutral units always stay)
-			if (viewer_ >= 0 && u->owner < 8 && u->owner != viewer_ && !(u->sprite->visibility_flags & (1 << viewer_))) continue;
+			bool foe = viewer_ >= 0 && u->owner < 8 && u->owner != viewer_;
+			if (foe && !(u->sprite->visibility_flags & bit)) continue;
+			int look = UnitView::kPlain;
+			if (fn_.u_cloaked(u) || fn_.u_requires_detector(u)) { // StarCraft shows an enemy's undetected cloaked unit as a shimmer, a burrowed one not at all
+				if (foe && fn_.unit_is_undetected(u, viewer_)) { if (fn_.u_burrowed(u)) continue; look = UnitView::kShimmer; }
+				else look = UnitView::kSeeThrough;
+			}
 			auto& d = u->unit_type->dimensions; auto* mi = u->sprite->main_image;
 			units_.push_back({at.first, at.second, (d.from.x + d.to.x + 1) / 2.0, (double)(d.from.y + d.to.y + 1),
 				u->owner, (int)u->unit_type->id, (int)mi->image_type->id, (int)mi->frame_index, (mi->flags & image_t::flag_horizontally_flipped) != 0,
-				(int)fn_.direction_index(u->heading), (mi->flags & image_t::flag_has_directional_frames) != 0, (int)mi->frame_index_base, u});
+				(int)fn_.direction_index(u->heading), (mi->flags & image_t::flag_has_directional_frames) != 0, (int)mi->frame_index_base, look == UnitView::kShimmer ? nullptr : u});
 			{ auto& b = units_.back(); double mh = u->unit_type->hitpoints.raw_value ? u->unit_type->hitpoints.raw_value / 256.0 : 0, ms = u->unit_type->shield_points;
 			  if (mh > 0) b.hp_frac = std::max(0.0, std::min(1.0, (u->hp.raw_value / 256.0) / mh));
-			  if (u->unit_type->has_shield && ms > 0) b.shield_frac = std::max(0.0, std::min(1.0, (u->shield_points.raw_value / 256.0) / ms)); }
+			  if (u->unit_type->has_shield && ms > 0) b.shield_frac = std::max(0.0, std::min(1.0, (u->shield_points.raw_value / 256.0) / ms));
+			  b.look = look; b.dim = fog_at(b.x, b.y); }
 			assets_.sprite((int)mi->image_type->id);
-			// Finished buildings and mineral fields with a model: scaled so its footprint covers the unit's (by area)
-			if (models_ && model_mode_ >= 1 && fn_.u_completed(u)) {
+			// Finished buildings and mineral fields with a model: scaled so its footprint covers the unit's (by area); a
+			// cloaked unit stays a sprite (see-through and shimmer are drawn on sprites)
+			if (models_ && model_mode_ >= 1 && fn_.u_completed(u) && look == UnitView::kPlain) {
 				auto& b = units_.back();
 				if (const M3Model* m = models_->for_unit(u->unit_type->id)) {
 					double mw = std::max(0.1f, m->hi[0] - m->lo[0]), md = std::max(0.1f, m->hi[1] - m->lo[1]);
@@ -127,8 +142,26 @@ public:
 					b.model = m; b.mscale = kUnitModelScale; b.myaw = fn_.direction_index(u->heading) * (2 * 3.14159265358979323846 / 256) + 3.14159265358979323846;
 				}
 			}
+			if (foe && look == UnitView::kPlain && fn_.u_grounded_building(u)) remember(u, units_.back());
 		}
+		recall();
 	}
+	// Fog of war (with a viewer): how bright the terrain and what stands on it are drawn at (x,y): kLit where the viewer
+	// sees now, kFogged where it has seen before, kUnexplored elsewhere; between tile centres blended. 1 without a viewer.
+	float fog_at(double x, double y) const {
+		if (fog_.empty()) return 1;
+		const int tw = (int)gs_.map_tile_width, th = (int)gs_.map_tile_height;
+		if (outside_px(x, y)) { x = mirror_coord(x, gs_.map_width); y = mirror_coord(y, gs_.map_height); }
+		double fx = x / 32 - 0.5, fy = y / 32 - 0.5; int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy); float ax = (float)(fx - x0), ay = (float)(fy - y0);
+		auto at = [&](int tx, int ty) { return fog_[(size_t)std::max(0, std::min(th - 1, ty)) * tw + std::max(0, std::min(tw - 1, tx))]; };
+		float top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * ax, bot = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * ax;
+		return top + (bot - top) * ay;
+	}
+	static constexpr float kLit = 1, kFogged = 0.55f, kUnexplored = 0.3f;
+	static constexpr double kFogFade = 0.25; // seconds to fade from lit to fogged (OpenBW clears vision every 100 frames, ~4 s,
+	                                         // and units add theirs back: drawn as it is, the fog would close in jumps)
+	// Enemy buildings remembered in the fog (with a viewer), as the viewer last saw them.
+	int remembered() const { return (int)memory_.size(); }
 	// 3D models (fp_models.h); without a library every unit is a sprite.
 	void set_models(ModelLibrary* m) { models_ = m; }
 	// What is drawn as a model (switchable while playing; sprites stay for everything else):
@@ -137,7 +170,9 @@ public:
 	void set_model_mode(int mode) { model_mode_ = std::max(0, std::min(2, mode)); }
 	// Whose eyes the world is seen through: other players' units in that player's fog are left out (also for picking).
 	// -1 (default): everything, as in a replay.
-	void set_viewer(int player) { viewer_ = player; }
+	// Also: the terrain is dimmed where that player does not see (fog_at), and the other players' buildings they have seen
+	// stay where they were last seen until that spot is in sight again.
+	void set_viewer(int player) { viewer_ = player; fog_.clear(); memory_.clear(); }
 	int model_mode() const { return models_ ? model_mode_ : 0; }
 	// A model placed in the world independently of the simulation (fp_view's model views): not pickable.
 	void add_static_model(const M3Model* m, double x, double y, double px_per_unit, double yaw_deg, int owner) {
@@ -183,7 +218,8 @@ public:
 			for (auto& t : th) t.join();
 		}
 		if (ov) for (auto& vi : vis) {
-			const UnitView& un = units_[vi.idx]; bool sel = std::find(ov->selected.begin(), ov->selected.end(), un.ptr) != ov->selected.end();
+			const UnitView& un = units_[vi.idx]; if (!un.ptr) continue; // remembered, or not detected: no brackets, no health bar
+			bool sel = std::find(ov->selected.begin(), ov->selected.end(), un.ptr) != ov->selected.end();
 			if (sel || un.ptr == ov->hover) mark(cam, un, vi.depth, vi.sx, v, fb, sel);
 		}
 		const uint32_t xc = ov ? ov->crosshair : 0xFFFFFFFF;
@@ -212,7 +248,7 @@ public:
 		std::sort(vis.begin(), vis.end(), [](const Vis& a, const Vis& b) { return a.depth < b.depth; }); // near -> far
 		for (auto& vi : vis) {
 			if (vi.depth > depth_at(cx, cy)) break; // everything further is behind the terrain at the crosshair
-			if (units_[vi.idx].model) continue; // models are picked by their pixels (above)
+			if (units_[vi.idx].model || !units_[vi.idx].ptr) continue; // models are picked by their pixels (above); the untargetable not at all
 			Draw d = geometry(cam, units_[vi.idx], vi.depth, vi.sx, v);
 			if (cx < d.x0 || cx >= d.x1 || cy < d.y0 || cy >= d.y1) continue;
 			if (d.sp) { // ignore transparent pixels so you cannot select through gaps in a sprite
@@ -245,10 +281,10 @@ private:
 	// Models: transform every drawn triangle to the screen once per frame (back faces culled, clipped at the near plane).
 	void prepare_models(const Camera& cam, const unit_t* hide, const View& v) {
 		tris_.clear();
-		struct Inst { const M3Model* m; double x, y, s, yaw; int id, owner; };
+		struct Inst { const M3Model* m; double x, y, s, yaw; int id, owner; double dim; };
 		std::vector<Inst> inst;
-		for (size_t i = 0; i < units_.size(); ++i) if (units_[i].model && units_[i].ptr != hide) inst.push_back({units_[i].model, units_[i].x, units_[i].y, units_[i].mscale, units_[i].myaw, (int)i, units_[i].owner});
-		for (auto& sm : statics_) inst.push_back({sm.m, sm.x, sm.y, sm.scale, sm.yaw, -2, sm.owner});
+		for (size_t i = 0; i < units_.size(); ++i) if (units_[i].model && (!hide || units_[i].ptr != hide)) inst.push_back({units_[i].model, units_[i].x, units_[i].y, units_[i].mscale, units_[i].myaw, (int)i, units_[i].owner, units_[i].dim});
+		for (auto& sm : statics_) inst.push_back({sm.m, sm.x, sm.y, sm.scale, sm.yaw, -2, sm.owner, 1.0});
 		// cull whole models behind the camera, beyond the view distance or outside the view
 		inst.erase(std::remove_if(inst.begin(), inst.end(), [&](const Inst& in) {
 			const M3Model& m = *in.m; double r = in.s * std::max({std::fabs(m.lo[0]), std::fabs(m.hi[0]), std::fabs(m.lo[1]), std::fabs(m.hi[1]), std::fabs(m.hi[2])}) * 1.5;
@@ -268,7 +304,7 @@ private:
 				double wx = in.x + mx * cs - my * sn, wy = in.y + mx * sn + my * cs, wh = ground + p.z * s;
 				double nx = p.nx * cs + p.ny * sn, ny = p.nx * sn - p.ny * cs, nz = p.nz, nl = std::sqrt(nx * nx + ny * ny + nz * nz);
 				double dx = wx - cam.x, dy = wy - cam.y;
-				cv[k] = CV{-dx * v.diry + dy * v.dirx, wh - v.eye_h, dx * v.dirx + dy * v.diry, p.u, p.v, 0.55 + 0.6 * std::max(0.0, (nx * L[0] + ny * L[1] + nz * L[2]) / std::max(1e-6, nl))};
+				cv[k] = CV{-dx * v.diry + dy * v.dirx, wh - v.eye_h, dx * v.dirx + dy * v.diry, p.u, p.v, (0.55 + 0.6 * std::max(0.0, (nx * L[0] + ny * L[1] + nz * L[2]) / std::max(1e-6, nl))) * in.dim};
 			}
 			for (const M3Model::Batch& b : m.batches) {
 				const M3Texture* tex = b.tex >= 0 ? &m.tex[b.tex] : nullptr; const M3Texture* emis = b.emis >= 0 ? &m.tex[b.emis] : nullptr;
@@ -395,6 +431,7 @@ private:
 		auto first_row = [](double r) { return (int)std::ceil(r - 0.5); }; // first pixel row whose centre is at or below r
 		int top = H_;
 		const double inv_maxd = 1.0 / maxd, fog_from = 0.4 * maxd, inv_fog = 1.0 / (0.6 * maxd);
+		const bool fog = !fog_.empty(); // fog of war (distance fog is the other one, below)
 		auto put = [&](int sy, double d, double r, double g, double b) { // distance shading, then fog toward the horizon colour
 			double shade = 1.0 - 0.4 * std::min(1.0, d * inv_maxd);
 			size_t i = (size_t)sy * W_ + sx;
@@ -417,7 +454,7 @@ private:
 				double den = sy + 0.5 - hz + k * proj; if (den <= 1e-9) continue;
 				double d = std::max(d0, std::min(d1, (eh - h0 + k * d0) * proj / den));
 				double px = cam.x + rdx * d, py = cam.y + rdy * d; uint8_t t[3]; world_sample(px, py, t);
-				double k = outside_px(px, py) ? kOutside : 1.0;
+				double k = outside_px(px, py) ? kOutside : 1.0; if (fog) k *= fog_at(px, py);
 				put(sy, d, t[0] * k, t[1] * k, t[2] * k);
 			}
 			if (r0 < r1) top = r0;
@@ -429,7 +466,7 @@ private:
 			double rt = row_at(d, h1), rb = row_at(d, h0);
 			int r0 = std::max(0, first_row(rt)), r1 = std::min(top, first_row(rb));
 			if (r0 >= r1) return;
-			double hx = cam.x + rdx * d, hy = cam.y + rdy * d, light = 0.8 + 0.2 * ny + 0.05 * nx; // the art is lit for south-facing faces
+			double hx = cam.x + rdx * d, hy = cam.y + rdy * d, light = (0.8 + 0.2 * ny + 0.05 * nx) * (fog ? fog_at(hx, hy) : 1.0); // the art is lit for south-facing faces
 			double snx, sny; iso_snap(nx, ny, snx, sny);
 			for (int sy = r0; sy < r1; ++sy) {
 				double hp = h0 + (h1 - h0) * (rb - (sy + 0.5)) / std::max(1e-6, rb - rt); // terrain height at this pixel
@@ -491,7 +528,8 @@ private:
 			int r0 = std::max(0, first_row(row_at(maxd, h_last))), r1 = std::min(top, first_row(row_at(t_in * kCell, h_last)));
 			for (int sy = r0; sy < r1; ++sy) {
 				double den = sy + 0.5 - hz; if (den <= 1e-9) continue;
-				put(sy, std::max(t_in * kCell, (eh - h_last) * proj / den), avg_[0] * kOutside, avg_[1] * kOutside, avg_[2] * kOutside);
+				double k = kOutside * (fog ? kUnexplored : 1.0);
+				put(sy, std::max(t_in * kCell, (eh - h_last) * proj / den), avg_[0] * k, avg_[1] * k, avg_[2] * k);
 			}
 			if (r0 < r1) top = r0;
 		}
@@ -519,7 +557,7 @@ private:
 	std::vector<Vis> visible(const Camera& cam, const unit_t* hide, const View& v) const {
 		std::vector<Vis> vis;
 		for (size_t i = 0; i < units_.size(); ++i) {
-			if (units_[i].ptr == hide) continue;
+			if (hide && units_[i].ptr == hide) continue;
 			double rx = units_[i].x - cam.x, ry = units_[i].y - cam.y;
 			double depth = rx * v.dirx + ry * v.diry, lateral = rx * (-v.diry) + ry * v.dirx;
 			if (depth < 4) continue;
@@ -559,30 +597,44 @@ private:
 	}
 
 
+	// Half the colour, half what is behind: a cloaked unit the viewer sees.
+	static uint32_t see_through(uint32_t c, uint32_t behind) { return 0xFF000000u | (((c & 0xFEFEFEu) >> 1) + ((behind & 0xFEFEFEu) >> 1)); }
 	void sprite(const Camera& cam, const UnitView& un, double depth, double sxc, const View& v, uint32_t* fb, int xa, int xb) {
 		Draw d = geometry(cam, un, depth, sxc, v);
 		if (d.sp) {
 			const auto& fr = d.sp->frames[d.frame];
-			double shade = std::max(0.4, 1.0 - depth / 1400.0), pc[3]; player_rgb(un.owner, pc);
+			double shade = std::max(0.4, 1.0 - depth / 1400.0) * un.dim, pc[3]; player_rgb(un.owner, pc);
+			// Shimmer: inside the unit's outline, what is behind it shows displaced up and down (read from a copy of the
+			// column, which only this thread draws), a little brighter, moving with the simulation's frames.
+			thread_local std::vector<uint32_t> behind; const double phase = st_.current_frame * 0.45; const int ya = std::max(0, d.y0 - 4), yb = std::min(H_, d.y1 + 4);
 			for (int x = std::max(xa, d.x0); x < std::min(xb, d.x1); ++x) {
 				double u = (x - d.x0 + 0.5) / std::max(1.0, d.wpx); if (d.flip) u = 1.0 - u;
+				if (un.look == UnitView::kShimmer) { behind.resize((size_t)std::max(0, yb - ya)); for (int y = ya; y < yb; ++y) behind[y - ya] = fb[(size_t)y * W_ + x]; }
 				for (int y = std::max(0, d.y0); y < std::min(H_, d.y1); ++y) {
 					if (depth > zbuf_[(size_t)y * W_ + x]) continue; // behind terrain at this pixel
 					double vv = (y - d.y0 + 0.5) / std::max(1.0, d.hpx);
 					int tx = fr.x + (int)(u * fr.w), ty = fr.y + (int)(vv * fr.h);
 					uint8_t t[4]; d.sp->texel(tx, ty, t);
 					if (t[3] < 128) continue;
+					uint32_t& out = fb[(size_t)y * W_ + x];
+					if (un.look == UnitView::kShimmer) {
+						int src = std::max(ya, std::min(yb - 1, y + (int)std::lround(3 * std::sin(x * 0.35 + y * 0.15 + phase))));
+						uint32_t c = behind[src - ya]; out = pack(((c >> 16) & 255) + 14, ((c >> 8) & 255) + 14, (c & 255) + 18);
+						continue;
+					}
 					double r = t[0], g = t[1], b = t[2];
 					if (un.owner < 8) if (int m = d.sp->team_mask(tx, ty)) { // blend toward the player colour, keeping the diffuse shading
 						double k = m / 255.0, lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255.0 * 1.6;
 						r = r * (1 - k) + pc[0] * lum * k; g = g * (1 - k) + pc[1] * lum * k; b = b * (1 - k) + pc[2] * lum * k;
 					}
-					fb[(size_t)y * W_ + x] = pack(r * shade, g * shade, b * shade);
+					uint32_t c = pack(r * shade, g * shade, b * shade);
+					out = un.look == UnitView::kSeeThrough ? see_through(c, out) : c;
 				}
 			}
-		} else { // flat fallback in the player colour
-			double pc[3]; player_rgb(un.owner, pc); uint32_t c = pack(pc[0], pc[1], pc[2]);
-			for (int x = std::max(xa, d.x0); x <= std::min(xb - 1, d.x1); ++x) for (int y = std::max(0, d.y0); y < std::min(H_, d.y1); ++y) if (depth <= zbuf_[(size_t)y * W_ + x]) fb[(size_t)y * W_ + x] = c;
+		} else if (un.look != UnitView::kShimmer) { // flat fallback in the player colour
+			double pc[3]; player_rgb(un.owner, pc); uint32_t c = pack(pc[0] * un.dim, pc[1] * un.dim, pc[2] * un.dim);
+			for (int x = std::max(xa, d.x0); x <= std::min(xb - 1, d.x1); ++x) for (int y = std::max(0, d.y0); y < std::min(H_, d.y1); ++y) if (depth <= zbuf_[(size_t)y * W_ + x]) {
+				uint32_t& out = fb[(size_t)y * W_ + x]; out = un.look == UnitView::kSeeThrough ? see_through(c, out) : c; }
 		}
 	}
 
@@ -615,6 +667,41 @@ private:
 	struct Track { uint16_t id = 0; int frame = -1; double x = 0, y = 0, px = 0, py = 0; };
 	static constexpr int kTrackGap = 4; static constexpr double kTrackJump = 64;
 	std::vector<Track> tracks_ = std::vector<Track>(2048);
+	// Fog of war: per map tile, the brightness now drawn (fading toward its target); empty without a viewer.
+	std::vector<float> fog_;
+	void update_fog(double dt) {
+		if (viewer_ < 0) { fog_.clear(); return; }
+		const size_t n = (size_t)gs_.map_tile_width * gs_.map_tile_height; const int bit = 1 << viewer_;
+		bool snap = fog_.size() != n; if (snap) fog_.assign(n, kUnexplored);
+		float step = snap || dt >= kFogFade ? 1.0f : (float)(dt / kFogFade) * (kLit - kFogged);
+		for (size_t i = 0; i < n; ++i) {
+			float target = (~st_.tiles[i].visible & bit) ? kLit : (~st_.tiles[i].explored & bit) ? kFogged : kUnexplored, &f = fog_[i];
+			f = f < target ? std::min(target, f + step) : std::max(target, f - step);
+		}
+	}
+	// Remembered enemy buildings: the last view of each (not targetable) and the tiles it covers, which OpenBW's own
+	// visibility test for it reads (update_thingy_visibility): once one of them is in sight and the building is not seen
+	// there, it is gone (or changed sides), and so is the memory.
+	struct Memory { UnitView view; int tx0, ty0, tx1, ty1; unsigned tick; };
+	std::map<uint16_t, Memory> memory_; unsigned memory_tick_ = 0;
+	void remember(const unit_t* u, const UnitView& seen) {
+		Memory& m = memory_[fn_.get_unit_id(u).raw_value]; m.view = seen; m.view.ptr = nullptr; m.tick = memory_tick_;
+		xy size = u->unit_type->placement_size, pos = u->sprite->position;
+		m.tx0 = std::max(0, (pos.x - size.x / 2) / 32); m.ty0 = std::max(0, (pos.y - size.y / 2) / 32);
+		m.tx1 = std::min((int)gs_.map_tile_width, m.tx0 + (size.x + 31) / 32); m.ty1 = std::min((int)gs_.map_tile_height, m.ty0 + (size.y + 31) / 32);
+	}
+	void recall() {
+		const int bit = viewer_ >= 0 ? 1 << viewer_ : 0;
+		for (auto it = memory_.begin(); it != memory_.end();) {
+			Memory& m = it->second;
+			if (m.tick == memory_tick_) { ++it; continue; } // seen now: drawn as itself
+			bool in_sight = false;
+			for (int ty = m.ty0; ty < m.ty1 && !in_sight; ++ty) for (int tx = m.tx0; tx < m.tx1; ++tx) if (~st_.tiles[(size_t)ty * gs_.map_tile_width + tx].visible & bit) { in_sight = true; break; }
+			if (in_sight) { it = memory_.erase(it); continue; }
+			units_.push_back(m.view); units_.back().dim = fog_at(m.view.x, m.view.y);
+			++it;
+		}
+	}
 	// Where unit u is drawn: `between` of the way from its position on the previous simulation frame to the current one.
 	// A unit seen for the first time, after a gap of more than kTrackGap frames (left out of the snapshots, a fast replay)
 	// or after a jump (placed, not walked) is drawn where it is.

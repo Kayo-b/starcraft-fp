@@ -96,7 +96,8 @@ public:
 	bool targetable(const unit_t* u) const { return u && u->sprite && !g_.fn().unit_dying(u); }
 	// Enemy unit the crosshair is on, if it is in weapon range.
 	bool in_range(const unit_t* target) { unit_t* p = player(); return p && targetable(target) && reaches(p, target); }
-	bool is_enemy(const unit_t* u) const { return targetable(u) && u->owner == g_.enemy(); }
+	// An enemy the local player can target: not cloaked or burrowed out of their detection (StarCraft rules).
+	bool is_enemy(const unit_t* u) const { return targetable(u) && u->owner == g_.enemy() && !g_.fn().unit_is_undetected(u, g_.owner()); }
 
 	enum class ShotResult { none, hit, miss };
 
@@ -237,10 +238,10 @@ private:
 			apply(h.m, e);
 			if (slot == g_.owner() && !pending_.empty()) pending_.erase(pending_.begin());
 		}
-		else if (kind == kMsgShoot) { // direct mode: the shot lands now; the target may have died or walked out of range since
+		else if (kind == kMsgShoot) { // direct mode: the shot lands now; the target may have died, walked out of range or cloaked since
 			unit_t* t = g_.fn().get_unit(unit_id((uint16_t)r.get<uint16_t>()));
 			unit_t* p = g_.fn().get_unit(h.id); const weapon_type_t* w = p ? p->unit_type->ground_weapon.operator->() : nullptr;
-			if (!p || !w || h.trigger == kTriggerFree || g_.fn().unit_dying(p) || !targetable(t) || t->owner == slot || t->owner >= 8) return;
+			if (!p || !w || h.trigger == kTriggerFree || g_.fn().unit_dying(p) || !targetable(t) || t->owner == slot || t->owner >= 8 || g_.fn().unit_is_undetected(t, slot)) return;
 			if (p->ground_weapon_cooldown > kHold) return;
 			p->ground_weapon_cooldown = w->cooldown;
 			if (!reaches(p, t)) { if (slot == g_.owner()) ++misses; return; }

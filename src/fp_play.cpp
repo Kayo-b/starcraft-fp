@@ -119,8 +119,8 @@ struct View {
 	// Next unit after the current one whose owner passes `want` (owner < 0: any player unit).
 	void cycle_follow(const Renderer& r, int owner) {
 		const auto& us = r.units(); size_t start = 0;
-		for (size_t i = 0; i < us.size(); ++i) if (us[i].ptr == follow) start = i + 1;
-		for (size_t k = 0; k < us.size(); ++k) { const auto& u = us[(start + k) % us.size()]; if (owner < 0 ? u.owner < 8 : u.owner == owner) { follow = u.ptr; return; } }
+		for (size_t i = 0; i < us.size(); ++i) if (follow && us[i].ptr == follow) start = i + 1;
+		for (size_t k = 0; k < us.size(); ++k) { const auto& u = us[(start + k) % us.size()]; if (u.ptr && (owner < 0 ? u.owner < 8 : u.owner == owner)) { follow = u.ptr; return; } }
 	}
 	void apply_follow(const Renderer& r) {
 		if (!follow) return;
@@ -543,6 +543,9 @@ int main(int argc, char** argv) {
 			K(2.6, "check hero", [&] { st.check("your hero is in the game and the camera is on it", s.fps->alive() && v.follow == s.fps->player()); });
 			K(2.7, "check fog", [&] { int seen = 0; for (auto& u : s.r->units()) if (u.owner == s.game->enemy()) ++seen;
 				st.check("the other player's base, far away in the fog, is not drawn (" + std::to_string(seen) + " of their units drawn)", seen == 0); });
+			K(2.75, "check terrain fog", [&] { xy mine = s.game->start_location(s.game->owner()), theirs = s.game->start_location(s.game->enemy());
+				float a = s.r->fog_at(mine.x, mine.y), b = s.r->fog_at(theirs.x, theirs.y);
+				st.check(bwgame::format("the terrain is lit around your base (%.2f) and dimmed at the other one, never seen (%.2f)", a, b).c_str(), a == Renderer::kLit && b == Renderer::kUnexplored); });
 			K(2.8, "F", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_F, SDLK_f); });
 			K(3.1, "check commander", [&] { st.check("F steps out of the hero to command the base (free camera)", commander && v.follow == nullptr); });
 			K(3.2, "F", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_F, SDLK_f); });
@@ -604,7 +607,7 @@ int main(int argc, char** argv) {
 						case SDLK_F12: save_ppm(bwgame::format("fp_shot_%03d.ppm", shots++), fb, a.rw, a.rh); break;
 						case SDLK_m: if (s.models) { // cycle sprites only -> 3D buildings -> 3D buildings and units
 							static const char* names[3] = {"Models: off (sprites only)", "Models: buildings and minerals", "Models: buildings and units (experimental, not animated)"};
-							s.model_mode = (s.model_mode + 1) % 3; s.r->set_model_mode(s.model_mode); s.r->update_units(); cmd.say(names[s.model_mode]);
+							s.model_mode = (s.model_mode + 1) % 3; s.r->set_model_mode(s.model_mode); s.r->update_units(acc / sim_dt, 0); cmd.say(names[s.model_mode]);
 						} else cmd.say("No models loaded (run with --models DIR)"); break;
 						case SDLK_e: if (s.live()) { // possess the selected unit / release
 							if (s.net() && !commander) { cmd.say("Press F to command your base"); break; }
@@ -627,7 +630,7 @@ int main(int argc, char** argv) {
 			bool waiting = false;
 			if (!paused && !s.done()) { acc += dt * speed; int n = 0; while (acc >= sim_dt && n < 16 && !s.done()) { if (!s.step()) { waiting = true; acc = sim_dt; break; } acc -= sim_dt; ++n; } if (n == 16) acc = 0; }
 			wait.update(waiting, dt);
-			s.r->update_units(acc / sim_dt); // drawn between the last two simulation frames
+			s.r->update_units(acc / sim_dt, dt); // drawn between the last two simulation frames; the fog of war fades
 			// FPS: firing, feedback events
 			if (s.fps) {
 				Fps& F = *s.fps; unit_t* hero = F.player();

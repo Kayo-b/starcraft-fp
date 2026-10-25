@@ -167,7 +167,25 @@ client (command card, hotkeys) and no Remastered client (closed, no API; see the
   patterns, auto latency over localhost (2), `fp_fpstest` units drawn between frames and the direction-255 walk (fails with the
   old encoding). Not checked: play by a person over a real network (feel cannot be tested headless); the 25 ms margin assumes
   windows rendering at 60 Hz or more (the ping is answered once per rendered frame: ~30-70 ms with two windows on one computer).
-- **N4** `todo` Fog of war: remembered enemy buildings, cloaked units, terrain dimmed outside vision.
+- **N4** `done` Fog of war, drawn for one player (`Renderer::set_viewer`; renderer only, plus one simulation rule). Terrain:
+  per map tile from OpenBW's vision bits, 1 where the viewer sees, 0.55 where it has seen, 0.3 where it never has (darker than
+  StarCraft's fog, lighter than its black: the world stays readable at a distance), blended between tile centres, faded over
+  0.25 s (OpenBW clears vision every 100 frames and units add theirs back: drawn as it is, the fog closes in jumps); sprites and
+  models take the brightness of their spot. Remembered buildings: the last view of each enemy building seen, not targetable,
+  drawn while out of sight; forgotten once a tile of its footprint (the tiles OpenBW's own visibility test reads) is in sight and
+  the building is not seen there. Cloaked units: an enemy's undetected one is a shimmer (the pixels behind it, displaced up and
+  down in waves, read from a copy of the column, so the render threads stay apart) and cannot be picked; burrowed ones are not
+  drawn; detected and own ones are see-through. The FPS layer does not target undetected units and the simulation drops a
+  free-movement shot at one (`kProtocol` 4). Found and fixed: images without an anim file of their own drew as flat boxes (the
+  Command Center, the Dark Templar, the Lurker: "missing HD sprites" at exit); they share the anim of the first image with
+  their GRP (as `tools/hd_units.py` found), which covers 129 of 131. `fp_fogtest` (new): brightness lit/fogged/unexplored and
+  the fade, a view of an unexplored base drawn at ~0.3 of its brightness, a Nexus scouted, remembered (dimmed, picks nothing),
+  destroyed unseen and still remembered, forgotten when seen again; a Dark Templar undetected (shimmer, not picked, not an FPS
+  target) and detected by a Missile Turret (see-through, a target); a burrowed Zergling not drawn; without a viewer no fog;
+  every unit drawn has art; 3.1 ms per 640x400 frame with fog, 2.6 without. Multiplayer `--selftest-input`: your base lit, the
+  other one dark. Golden views unchanged (no viewer there). Not covered: nothing in the game's controls makes cloaked or burrowed
+  units yet; the shimmer was checked on frames from the test, not in play; the free-movement shot rule is untested (only a
+  modified client could send such a shot).
 - **N5** `todo` Internet play: a relay or NAT punching, reconnecting, a replay of the match (`sync.h` can save one).
 
 ## Verification (every milestone)

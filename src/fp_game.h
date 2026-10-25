@@ -27,7 +27,7 @@ public:
 	// Custom message channels (first byte of a custom command).
 	enum : uint8_t { kChanGame = 1, kChanFps = 2 };
 	enum : uint8_t { kHello = 1, kHash = 2 };
-	static constexpr int kProtocol = 3;   // bump when commands, the lobby or the simulation-side code change incompatibly
+	static constexpr int kProtocol = 4;   // bump when commands, the lobby or the simulation-side code change incompatibly
 	// Every frame each game sends a hash of its state; the other compares it with its own for that frame (kept for the
 	// last kHashRing frames). OpenBW's own check (sync.h, every 32 frames) drops the connection on a mismatch; this one
 	// comes first and says why.
