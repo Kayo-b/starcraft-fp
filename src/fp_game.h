@@ -27,7 +27,7 @@ public:
 	// Custom message channels (first byte of a custom command).
 	enum : uint8_t { kChanGame = 1, kChanFps = 2 };
 	enum : uint8_t { kHello = 1, kHash = 2 };
-	static constexpr int kProtocol = 1;   // bump when commands or the simulation-side code change incompatibly
+	static constexpr int kProtocol = 2;   // bump when commands or the simulation-side code change incompatibly
 	// Every frame each game sends a hash of its state; the other compares it with its own for that frame (kept for the
 	// last kHashRing frames). OpenBW's own check (sync.h, every 32 frames) drops the connection on a mismatch; this one
 	// comes first and says why.
@@ -99,6 +99,7 @@ public:
 	// One simulation frame. Two-player game: false, with nothing changed, while the other player has not caught up,
 	// and for good once the games disagree (failure()).
 	bool step() {
+		if (before_step_) before_step_();
 		if (net_) {
 			if (!failure_.empty()) return false;
 			try { if (!net_->poll_frame()) return false; }
@@ -110,6 +111,9 @@ public:
 		return true;
 	}
 	int frame() { return player_->st().current_frame; }
+	// The frame whose step applies a command given now: the next one in single player, `latency` frames on in a
+	// two-player game (one more while this game waits for the other player's: its next frame is already announced).
+	int command_frame() { return frame() + (net_ ? net_->latency() + (net_->announced() ? 1 : 0) : 1); }
 	int owner() const { return owner_; }
 	int enemy() const { return enemy_; }
 	state& st() { return player_->st(); }
@@ -155,6 +159,10 @@ public:
 	}
 	// Receiver of kChanFps messages (slot = the player who sent it); runs inside the frame, in both games.
 	void set_fps_handler(std::function<void(int slot, data_loading::data_reader_le&)> f) { fps_handler_ = std::move(f); }
+	// Called at the start of every step() (two-player game: every attempt), to send input gathered since the last one.
+	void set_before_step(std::function<void()> f) { before_step_ = std::move(f); }
+	// More simulation state to cover in state_hash() (state kept outside OpenBW, e.g. the heroes' free movement).
+	void set_hash_extra(std::function<uint32_t()> f) { hash_extra_ = std::move(f); }
 
 	// ---- two-player status ----
 	bool net() const { return net_ != nullptr; }
@@ -176,6 +184,7 @@ public:
 			add((uint32_t)u->unit_type->id); add(u->owner); add(u->exact_position.x.raw_value); add(u->exact_position.y.raw_value);
 			add((u->hp + u->shield_points).raw_value); add((uint32_t)u->order_type->id); add(u->ground_weapon_cooldown);
 		}
+		if (hash_extra_) add(hash_extra_());
 		return h;
 	}
 
@@ -237,7 +246,7 @@ private:
 			if (proto != kProtocol) failure_ = "the other player runs a different version of this program";
 			else if (lat != latency()) failure_ = format("the other player uses --latency %d (this game: %d)", lat, latency()).c_str();
 			else if (crc != map_crc_) failure_ = "the other player loaded a different map file";
-			else if (set != settings_) failure_ = "the other player uses different game settings (--fire-rate / --range / --speed)";
+			else if (set != settings_) failure_ = "the other player uses different game settings (--fire-rate / --range / --speed / --fps-move-shoot)";
 		} else if (kind == kHash) {
 			int f = (int)r.get<uint32_t>(); uint32_t h = r.get<uint32_t>();
 			auto& mine = hashes_[f % kHashRing];
@@ -252,6 +261,8 @@ private:
 	action_functions* act_ = nullptr;
 	int owner_ = 0, enemy_ = 1;
 	std::function<void(int, data_loading::data_reader_le&)> fps_handler_;
+	std::function<void()> before_step_;
+	std::function<uint32_t()> hash_extra_;
 	std::vector<unit_id> sel_; int sel_frame_ = -1000;
 	std::array<std::pair<int, uint32_t>, kHashRing> hashes_{};
 	uint32_t settings_ = 0, map_crc_ = 0;

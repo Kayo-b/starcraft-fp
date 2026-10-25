@@ -30,6 +30,8 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
 - **Movement, free (`--fps-move-shoot`, experimental)**: WASD drives the hero directly with velocity physics (acceleration, friction,
   wall slide) in any direction, with no orders, so you can walk and shoot at the same time. RMB sets an auto-walk goal at the crosshair
   floor point (any WASD input cancels it). Damage goes straight through OpenBW's weapon-hit resolution. Top speed is fixed at 192 px/s.
+  The physics runs once per simulation frame in integers (1/256 px) and the input goes in as commands, so it also works in a
+  multiplayer game; the camera is drawn between frames, ahead of the simulation by the input on its way (see Multiplayer).
 - **Shooting**: mouse aims, hold LMB to fire at the enemy under the crosshair (small aim assist; no shooting through walls). The hero
   only fires while the trigger is held (StarCraft units normally auto-attack). Crosshair: green = enemy in weapon range, red = enemy
   out of range; firing out of range still shoots and always misses (with a bullet-impact sound from the mod).
@@ -48,10 +50,14 @@ games run the whole simulation in lockstep (OpenBW's `sync.h`, `src/fp_net.h`); 
 in both games on the same frame, `--latency` frames after it was given.
 
     ./run.sh --host                   # wait for the other player on port 6112 (GAME_MAP, or --game MAP; --race R)
-    ./run.sh --join 192.168.1.20      # on the other computer: the same map file and the same --fire-rate/--range/--speed
+    ./run.sh --join 192.168.1.20      # on the other computer: the same map file, --fire-rate/--range/--speed/--fps-move-shoot
 
 - **Hero view** (the start): the FPS controls (WASD order-driven movement, hold LMB to fire, RMB move/attack at the crosshair).
   A dead hero comes back at its start location after 10 s. The top line counts hero kills : deaths.
+- **Free movement** (`--fps-move-shoot`, both players): walk and shoot at once. Walking input and shots are commands like any other,
+  so they land `--latency` frames later; your own camera does not wait for that: it runs the same movement code ahead over the input
+  still on its way, which is exactly where your hero ends up (only terrain stops a hero), and draws in between frames. The other
+  player's hero is drawn where the simulation has it, moving in frame steps.
 - **Commanding the base**: F steps out of the hero into a free camera with the game sandbox controls (LMB select, RMB order,
   E possess, T worker, Y combat unit, B supply, X stop, TAB next unit); meanwhile the hero fights like any StarCraft unit. F, or E
   with the hero selected, goes back into it.
@@ -60,12 +66,11 @@ in both games on the same frame, `--latency` frames after it was given.
 - Fog of war: the other player's units are drawn, and can be targeted, only where your units see them; neutral units always.
 - Options: `--race R`, `--name NAME` (default `$USER`), `--latency N` (1..8, default 2, ~83 ms; raise it on a slow link; both players
   must use the same value). The host waits for a player as long as it takes; a joiner retries for a minute.
-- Checked at the start: the program version, the map file (CRC), `--latency` and the FPS tuning must match. Every frame each game sends
+- Checked at the start: the program version, the map file (CRC), `--latency`, the FPS tuning and the movement mode must match. Every frame each game sends
   a hash of its state and the other compares it with its own: a difference stops the game with "out of sync at frame N" (none
   seen in the tests). The status lines show "Waiting for NAME..." while the other game lags and "NAME left the game" or "Lost the
   connection to NAME" when it is gone.
-- Not yet: `--fps-move-shoot` (free movement integrates wall-clock time in floating point, so the two games would drift apart),
-  more than two players (`sync.h` takes one peer), NAT traversal (the joiner must reach the host's TCP port: forward it on the
+- Not yet: more than two players (`sync.h` takes one peer), NAT traversal (the joiner must reach the host's TCP port: forward it on the
   host's router), reconnecting, remembered enemy buildings in the fog, cloaked units shown as such.
 
 ### Replay and game sandbox
@@ -95,10 +100,12 @@ in both games on the same frame, `--latency` frames after it was given.
 model against OpenBW's walkability and ground heights; `TERRAIN_MAPS=...` adds maps), `fp_gametest` (RTS orders, determinism),
 `fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death), `fp_nettest` (two games in two threads over localhost TCP: the same
 state on every frame of a 2400-frame game with commands, a hero fight and respawns; commands landing on the same frame in both after the
-latency; a deliberate state change found on the next frame; a player leaving; built with AddressSanitizer), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
+latency; a deliberate state change found on the next frame; a player leaving; free movement with shooting, and the camera's
+prediction matching the simulation on every frame; built with AddressSanitizer), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
 Window tests (they open a window briefly): `fp_play ... --selftest-input` for replay, `--game MAP` and `--game MAP --fps --weapons MOD_DIR`
 (use `SDL_AUDIODRIVER=dummy` to stay silent); `--autotest` checks collision against OpenBW `is_walkable`. Multiplayer: start
-`--game MAP --host PORT --selftest-input` and `--game MAP --join 127.0.0.1:PORT --selftest-input` together; both must pass.
+`--game MAP --host PORT --selftest-input` and `--game MAP --join 127.0.0.1:PORT --selftest-input` together; both must pass
+(add `--fps-move-shoot` to both for free movement: W walks the hero, the camera stays on it, releasing W stops it).
 Golden views: `tools/golden.sh LABEL` renders fixed first-person views (`fp_view --spot K`: start locations, map centre,
 quarter points; four headings) of one stock map per tileset plus the demo replay into `out/golden/LABEL/*.png` contact sheets,
 to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset; `fp_view --heightmap F.ppm` the terrain model

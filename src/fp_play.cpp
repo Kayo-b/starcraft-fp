@@ -11,7 +11,8 @@
 //   --map FILE           load a map with neutral units only
 //
 // Multiplayer options: --latency N (frames between a command and its effect, 1..8, default 2; both players alike),
-//   --name NAME. Pause, sim speed and restart are off; --fire-rate/--range/--speed must match the other player's.
+//   --name NAME. Pause, sim speed and restart are off; --fire-rate/--range/--speed/--fps-move-shoot must match the other
+//   player's. With --fps-move-shoot the camera shows your hero where your input is taking it (no wait for the latency).
 //
 // FPS options: --weapons MOD_DIR (gun art/sounds), --fps-move-shoot (free movement: walk and shoot at once),
 //   --fire-rate N / --range N / --speed N (percent of the StarCraft data, 10..1000)
@@ -67,8 +68,8 @@ struct Session {
 		r.reset(); player.reset(); fps.reset(); game.reset();
 		if (!a.game_map.empty() && a.net) { // blocks in the lobby (status on stdout) until the host starts the game
 			replay = false; game = std::make_unique<Game>();
-			game->open_net(a.data, a.game_map, a.race, a.netopt, [](const std::string& m) { std::cout << m << std::endl; }, Fps::settings_hash(a.fire_rate, a.range_pct, a.speed_pct));
-			fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct, a.speed_pct, false, true);
+			game->open_net(a.data, a.game_map, a.race, a.netopt, [](const std::string& m) { std::cout << m << std::endl; }, Fps::settings_hash(a.fire_rate, a.range_pct, a.speed_pct, a.direct));
+			fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct, a.speed_pct, a.direct, true);
 			if (!fps->start()) error("the map has no room for the heroes at the start locations");
 			std::cout << "Game started against " << game->opponent_name() << " (you are player " << game->owner() + 1 << ")" << std::endl;
 			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh, a.rp);
@@ -345,7 +346,6 @@ int main(int argc, char** argv) {
 	if (a.rp.view_dist < 200 || a.rp.eye_h < 1 || a.rp.level_h < 8) die("--view-dist must be >= 200, --eye >= 1, --level-h >= 8 (px)");
 	if (a.net) {
 		if (a.game_map.empty()) die("--host / --join need --game MAP (the same map file on both computers)");
-		if (a.direct) die("--fps-move-shoot is single player only for now (free movement is not deterministic yet)");
 		if (a.autotest) die("--autotest is single player only");
 		if (a.netopt.latency < 1 || a.netopt.latency > 8) die("--latency must be 1..8 frames");
 		if (a.netopt.port < 1 || a.netopt.port > 65535 || a.netopt.address.empty()) die("--host [PORT] / --join HOST[:PORT]: port 1..65535");
@@ -402,7 +402,7 @@ int main(int argc, char** argv) {
 		auto set_commander = [&](bool on) {
 			if (!s.fps || on == commander) return;
 			commander = on; firing = false; moving = false;
-			if (on) { v.follow = nullptr; s.fps->set_trigger_mode(Fps::kTriggerFree); cmd.say("Commanding your base: F back to your hero (it fights on its own meanwhile)"); }
+			if (on) { v.follow = nullptr; if (s.fps->direct()) s.fps->halt(); s.fps->set_trigger_mode(Fps::kTriggerFree); cmd.say("Commanding your base: F back to your hero (it fights on its own meanwhile)"); }
 			else { s.fps->set_trigger_mode(Fps::kTriggerUp); if (unit_t* h = s.fps->player()) { v.follow = h; s.game->select(h); } cmd.say("Back in your hero"); }
 		};
 		SelfTest st; bool live_test = a.selftest_input && s.live() && !s.fps, fps_test = a.selftest_input && s.fps && !s.net(), net_test = a.selftest_input && s.net();
@@ -542,8 +542,18 @@ int main(int argc, char** argv) {
 			K(3.5, "check hero view", [&] { st.check("F again: back in the hero", !commander && v.follow == s.fps->player() && s.fps->player() != nullptr); });
 			K(3.6, "P", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_P, SDLK_p); });
 			K(3.9, "check no pause", [&] { st.check("P does not pause a multiplayer game", !paused && cmd.msg.find("No pause") != std::string::npos); });
-			K(4.4, "check sync", [&] { st.check("still in sync with the other game at frame " + std::to_string(s.frame()) + " (state hashes compared every frame)", s.game->failure().empty() && s.game->desync_frame() < 0); });
-			K(4.6, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
+			if (s.fps->direct()) { // free movement: the hero walks on W, the camera with it (ahead of the simulation by the latency)
+				static double x0 = 0, y0 = 0;
+				K(4.0, "W down", [&] { auto at = s.fps->mover_position(s.game->owner()); x0 = at.first; y0 = at.second; push_key(SDL_KEYDOWN, SDL_SCANCODE_W, SDLK_w); });
+				K(4.6, "check walk", [&] { auto at = s.fps->mover_position(s.game->owner()); double d = std::hypot(at.first - x0, at.second - y0), lead = std::hypot(v.cam.x - at.first, v.cam.y - at.second);
+					st.check("W walks the hero (free movement: " + std::to_string((int)d) + " px)", d > 30);
+					st.check("the camera is on the hero, at most a few frames ahead (" + std::to_string((int)lead) + " px)", lead <= 4 * Fps::kTopSpeed / 256.0); });
+				K(4.7, "W up", [&] { push_key(SDL_KEYUP, SDL_SCANCODE_W, SDLK_w); });
+				K(5.7, "check rest", [&] { /* friction stops it in about 0.6 s, plus the latency */ double sp = s.fps->speed(), lead = 0; auto at = s.fps->mover_position(s.game->owner()); lead = std::hypot(v.cam.x - at.first, v.cam.y - at.second);
+					st.check("releasing W stops the hero and the camera on it (" + std::to_string((int)sp) + " px/s, camera " + std::to_string((int)lead) + " px off)", sp < 2 && lead < 1); });
+			}
+			K(5.9, "check sync", [&] { st.check("still in sync with the other game at frame " + std::to_string(s.frame()) + " (state hashes compared every frame)", s.game->failure().empty() && s.game->desync_frame() < 0); });
+			K(6.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 
 		while (run) {
@@ -558,7 +568,7 @@ int main(int argc, char** argv) {
 				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-kMaxPitch * a.rh, std::min(kMaxPitch * a.rh, v.cam.pitch - e.motion.yrel * 0.8)); }
 				else if (e.type == SDL_MOUSEBUTTONUP && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = false; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && !commander && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
-				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && s.fps->direct() && e.button.button == SDL_BUTTON_RIGHT) {
+				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && s.fps->direct() && !commander && e.button.button == SDL_BUTTON_RIGHT) {
 					if (pick.ground) s.fps->go_to(pick.gx, pick.gy); else cmd.say("Aim at the floor");
 				}
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.live()) {
@@ -634,13 +644,11 @@ int main(int argc, char** argv) {
 			// movement: free camera flies; a possessed unit in game mode is driven with move orders
 			double run_mul = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) ? 3.0 : 1.0, sp = 110.0 * run_mul * dt;
 			double fwd = (keys[SDL_SCANCODE_W] ? sp : 0) - (keys[SDL_SCANCODE_S] ? sp : 0), str = (keys[SDL_SCANCODE_D] ? sp : 0) - (keys[SDL_SCANCODE_A] ? sp : 0);
-			if (s.fps && s.fps->direct() && v.follow) { // direct mode: velocity input, walk and shoot at once, no orders
+			if (s.fps && s.fps->direct() && !commander && !v.follow) s.fps->drive(0, 0); // no hero: no input left over for the next one
+			if (s.fps && s.fps->direct() && !commander && v.follow) { // direct mode: walking input (sent before the next step), walk and shoot at once, no orders
 				const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180;
 				double f = fwd > 0 ? 1 : fwd < 0 ? -1 : 0, sd = str > 0 ? 1 : str < 0 ? -1 : 0;
-				if (f || sd) {
-					double dx = std::cos(h) * f - std::sin(h) * sd, dy = std::sin(h) * f + std::cos(h) * sd, len = std::hypot(dx, dy);
-					s.fps->drive(dx / len, dy / len, dt);
-				} else s.fps->drive(0, 0, dt);
+				s.fps->drive(std::cos(h) * f - std::sin(h) * sd, std::sin(h) * f + std::cos(h) * sd);
 				moving = false;
 			} else if (s.live() && v.follow) {
 				if ((fwd || str) && !(s.fps && firing && fire_ready) && (!s.fps || commander || s.fps->alive())) {
@@ -654,6 +662,8 @@ int main(int argc, char** argv) {
 				} else if (moving && !(s.fps && firing && fire_ready)) { s.game->stop(); moving = false; }
 			} else { if (moving) { moving = false; } if (fwd || str) { if (v.follow) v.follow = nullptr; v.move(*s.r, fwd, str); } }
 			v.apply_follow(*s.r);
+			if (s.fps && s.fps->direct() && !commander && v.follow && v.follow == s.fps->player()) { // ahead of the simulation by the input on its way, smooth between frames
+				double x, y; if (s.fps->view_position(acc / sim_dt, x, y)) { v.cam.x = x; v.cam.y = y; } }
 			// overlay: selection and hover
 			ov.selected.clear(); ov.hover = pick.unit;
 			if (s.live()) for (unit_t* u : s.game->selection()) ov.selected.push_back(u);

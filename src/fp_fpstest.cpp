@@ -93,11 +93,18 @@ int main(int argc, char** argv) {
 			if (stock && p) { int base = (int)stock->flingy_top_speed.integer_part();
 				int scaled = (int)p->flingy_top_speed.integer_part();
 				check(base > 0 && scaled == std::max(1, base * 90 / 100), "direct mode: hero movement speed is scaled 90% (" + std::to_string(base) + " -> " + std::to_string(scaled) + ")"); } }
-		  f3.drive(1, 0, 0.05); check(f3.speed() > 0 && f3.speed() <= 200, "direct mode: velocity ramps toward the cap (" + std::to_string((int)f3.speed()) + ")");
+		  // the camera's view of the hero runs ahead of the simulation by the input not applied yet: exactly where it ends up
+		  { double x0, y0, x1, y1; f3.drive(1, 0);
+			bool ok = f3.view_position(0, x0, y0) && f3.view_position(1, x1, y1);
+			auto at0 = f3.mover_position(m.owner());
+			m.step(); f3.tick(); auto at1 = f3.mover_position(m.owner());
+			check(ok && x0 == at0.first && y0 == at0.second && x1 == at1.first && y1 == at1.second && x1 > x0,
+			      "direct mode: the view predicts the next frame exactly (" + std::to_string(x0) + " -> " + std::to_string(x1) + ", simulation " + std::to_string(at1.first) + ")"); }
+		  check(f3.speed() > 0 && f3.speed() <= 200, "direct mode: velocity ramps toward the cap (" + std::to_string((int)f3.speed()) + ")");
 		  double path = 0; int bad = 0; double lx = p->sprite->position.x, ly = p->sprite->position.y;
 		  for (int d = 0; d < 4; ++d) for (int i = 0; i < 60; ++i) {
 			double ix = (d == 0) - (d == 2), iy = (d == 1) - (d == 3);
-			f3.drive(ix, iy, 0.05); m.step(); f3.tick();
+			f3.drive(ix, iy); m.step(); f3.tick();
 			path += std::hypot(p->sprite->position.x - lx, p->sprite->position.y - ly);
 			lx = p->sprite->position.x; ly = p->sprite->position.y;
 			double r = (p->unit_type->dimensions.from.x + p->unit_type->dimensions.to.x + 1) / 4.0; bool ok = true;
@@ -114,18 +121,19 @@ int main(int argc, char** argv) {
 					if (px < 0 || py < 0 || px >= (int)m.st().game->map_width || py >= (int)m.st().game->map_height || !m.fn().is_walkable(xy{px, py})) clear = false; }
 				if (clear) { gxx = tx; gyy = ty; found = true; } }
 			if (found) { f3.go_to(gxx, gyy);
-				for (int i = 0; i < 120; ++i) { f3.drive(0, 0, 0.05); m.step(); f3.tick(); }
+				for (int i = 0; i < 120; ++i) { f3.drive(0, 0); m.step(); f3.tick(); }
 				double dg = std::hypot(p->sprite->position.x - gxx, p->sprite->position.y - gyy);
 				check(dg < 40, "direct mode: goal steering stops close to the point (" + std::to_string((int)dg) + " px away)"); } }
 		  // walk-and-shoot
 		  { unit_t* z = m.spawn(UnitTypes::Zerg_Zergling, xy{p->sprite->position.x + 90, p->sprite->position.y}, m.enemy());
-			if (z) { f3.set_trigger(true); int hp0 = (int)z->hp.integer_part();
-				for (int i = 0; i < 60; ++i) { f3.drive(0, 1, 0.02); m.step(); f3.tick(); if (f3.in_range(z)) f3.fire(z); }
-				check((int)z->hp.integer_part() < hp0 || m.fn().unit_dead(z), "direct mode: the hero shoots while moving (target HP " + std::to_string(hp0) + " -> " + std::to_string((int)z->hp.integer_part()) + ")"); } }
+			if (z) { f3.set_trigger(true); int hp0 = (int)z->hp.integer_part(), hits = 0, shots0 = f3.shots;
+				for (int i = 0; i < 60; ++i) { f3.drive(0, 1); m.step(); f3.tick(); if (f3.in_range(z) && f3.fire(z) == Fps::ShotResult::hit) ++hits; }
+				check((int)z->hp.integer_part() < hp0 || m.fn().unit_dead(z), "direct mode: the hero shoots while moving (target HP " + std::to_string(hp0) + " -> " + std::to_string((int)z->hp.integer_part()) + ")");
+				check(hits > 0 && f3.shots - shots0 == hits, "direct mode: every shot is counted once (" + std::to_string(hits) + " shots, " + std::to_string(f3.shots - shots0) + " counted)"); } }
 		  // position ownership: enemies running over the hero must not displace it
 		  { f3.halt(); double hx = p->sprite->position.x, hy = p->sprite->position.y;
 			for (int i = 0; i < 3; ++i) { unit_t* z = m.spawn(UnitTypes::Zerg_Zergling, xy{(int)hx + 2 + i * 6, (int)hy + 2}, m.enemy()); if (z) m.attack_as(m.enemy(), z, p); }
-			for (int i = 0; i < 120; ++i) { m.step(); f3.tick(); f3.drive(0, 0, 0.05); }
+			for (int i = 0; i < 120; ++i) { m.step(); f3.tick(); f3.drive(0, 0); }
 			check(p->sprite->position.x == (int)std::lround(hx) && p->sprite->position.y == (int)std::lround(hy), "direct mode: enemies cannot shove the hero (position unchanged)"); }
 		}
 		// Levels: on Bottleneck's (3284,500) a plateau edge looks south down a cliff into a low trench (y 548-588).

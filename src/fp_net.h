@@ -132,6 +132,9 @@ public:
 	int peer_slot() const { for (auto& c : sync_st_.clients) if (&c != sync_st_.local_client && c.player_slot >= 0) return c.player_slot; return -1; }
 	std::string peer_name() const { for (auto& c : sync_st_.clients) if (&c != sync_st_.local_client) return c.name.c_str(); return ""; }
 	int latency() const { return sync_st_.latency; }
+	// Whether this player's next frame is announced but not yet stepped (waiting for the other player): a command given
+	// now lands one frame later than right after a step.
+	bool announced() const { return announced_; }
 	const NetOptions& options() const { return options_; }
 	const std::string& error() const { return error_; }
 	sync_functions& funcs() { return *funcs_; }

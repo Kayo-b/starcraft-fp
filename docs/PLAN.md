@@ -131,8 +131,20 @@ client (command card, hotkeys) and no Remastered client (closed, no API; see the
   pending at exit released a client into freed memory (abort on quit in 4 of 4 window runs; `Net::~Net` closes the
   sockets and runs the aborted handlers first). `fp_nettest` (AddressSanitizer build: the release build passed with the
   corruption); multiplayer `--selftest-input` (both games).
-- **N2** `todo` Free movement in multiplayer: hero physics per simulation frame in fixed point (OpenBW's `fp8`), the move
-  direction as a command; local prediction of the own hero's camera to hide the latency.
+- **N2** `done` Free movement in multiplayer (`--fps-move-shoot`, both players; part of the start check). The hero's
+  physics runs once per simulation frame for every hero, in integers (1/256 px; OpenBW's direction table; acceleration,
+  friction, speed cap and per-axis wall slide in steps of at most 4 px), in `Fps::tick`; `move_unit` keeps OpenBW's unit
+  (finder, collision flags) on it, and OpenBW's idle targeting is stopped so it never walks the hero. Input as commands: the
+  walk direction (one byte, sent before a step when it changed; `Game::set_before_step`), the RMB walk target, halt, and
+  shots (target unit id; range checked in integers when the shot lands). Commanding the base hands the hero to OpenBW and
+  back. Camera: `Fps::view_position` runs the same physics ahead over the player's own input still in flight
+  (`Game::command_frame`: `latency` frames, one more while waiting for the other game) and draws between frames, so the
+  view moves on the key press; the simulation then ends up exactly there (the nettest compares every frame: 0 off in
+  2300+). The mover state is in the per-frame hash. Single player uses the same code: speed and feel as before (192 px/s,
+  ~0.6 s to stop), now smooth between frames rather than per render frame. Found and fixed: free movement counted every
+  shot twice (when fired and again from the weapon cooldown), so the gun animation and sound played twice per shot (on `main`:
+  2 shots, 4 counted; `fp_fpstest` now checks it). Not done: the other player's hero is drawn at simulation steps
+  (interpolation is N3).
 - **N3** `todo` Feel over a real network: camera interpolation between frames, latency picked from the measured round trip,
   a "waiting" indicator that does not flicker.
 - **N4** `todo` Fog of war: remembered enemy buildings, cloaked units, terrain dimmed outside vision.

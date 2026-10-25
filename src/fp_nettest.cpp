@@ -4,10 +4,13 @@
 //      take effect on the same frame in both, `latency` frames after they were given; heroes fight, die and come back.
 //   2. one game changes its state outside the command stream: both notice that they went out of sync.
 //   3. a player leaves: the other game goes on alone and its player wins.
+//   4. free movement (--fps-move-shoot): the heroes walk on input commands and shoot while walking; both games agree on
+//      every frame, and the camera's view of each hero, run ahead of the simulation, is exactly where the hero ends up.
 #include "fp_fps.h"
 #include <atomic>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <thread>
 #include <unistd.h>
 
@@ -21,14 +24,19 @@ struct Peer {
 	std::vector<uint32_t> hashes;     // state hash after every frame
 	int mineral_drop = -1;            // frame on which the host's 50 starting minerals were spent (as seen by this game)
 	std::string error;
+	bool direct = false;              // free movement (session 4)
+	// session 4: OpenBW walks the hero to the other one (trigger free), free movement once they are close
+	bool free = false; int direct_since = 0, compared = 0, mispredicted = 0; double walked = 0; std::pair<double, double> last_at{-1, -1};
+	struct Prediction { double x, y; int id; };
+	std::map<int, Prediction> pred[2]; // the camera's view of the hero for a frame, made one and two frames before it
 };
 
 // Opens the game in the lobby, then steps `frames` frames, calling script(peer) before each step.
 static void run(Peer& p, const std::string& data, const std::string& map, int port, int frames, const std::function<void(Peer&)>& script) {
 	try {
 		NetOptions o; o.host = p.host; o.port = port; o.latency = 2; o.wait_seconds = 20; o.name = p.name;
-		p.g.open_net(data, map, p.race, o, [&](const std::string&) {}, Fps::settings_hash(200, 200, 90));
-		p.f = std::make_unique<Fps>(p.g, 7, 200, 200, 90, false, true);
+		p.g.open_net(data, map, p.race, o, [&](const std::string&) {}, Fps::settings_hash(200, 200, 90, p.direct));
+		p.f = std::make_unique<Fps>(p.g, 7, 200, 200, 90, p.direct, true);
 		if (!p.f->start()) { p.error = "no hero"; return; }
 		auto t0 = std::chrono::steady_clock::now();
 		while ((int)p.hashes.size() < frames) {
@@ -138,6 +146,45 @@ int main(int argc, char** argv) {
 		check(h.error.empty() && (int)h.hashes.size() == 600, "the host's game goes on alone (" + std::to_string(h.hashes.size()) + " frames" + (h.error.empty() ? "" : ", " + h.error) + ")");
 		check(h.g.opponent_left() && !h.g.opponent_dropped(), "the host's game knows the other player left (and did not just drop)");
 		check(h.g.won(), "the host wins (melee rules)");
+	}
+
+	// 4. Free movement.
+	std::cout << "session 4: free movement (walk and shoot)\n";
+	{
+		Peer h{"host", true, race_t::terran}, j{"joiner", false, race_t::protoss}; h.direct = j.direct = true;
+		const int kFrames = 2400;
+		auto script = [&](Peer& p) {
+			Game& g = p.g; Fps& f = *p.f; int fr = g.frame(); unit_t* me = f.player(); unit_t* foe = f.opponent();
+			int id = me ? (int)g.fn().get_unit_id(me).raw_value : 0; bool live = me && !g.fn().unit_dying(me);
+			for (auto& pr : p.pred) { auto it = pr.find(fr); if (it == pr.end()) continue; // the predictions for this frame
+				if (live && it->second.id == id) { ++p.compared; auto at = f.mover_position(g.owner()); if (at.first != it->second.x || at.second != it->second.y) ++p.mispredicted; }
+				pr.erase(it); }
+			if (live && !p.free) { auto at = f.mover_position(g.owner()); if (p.last_at.first >= 0) p.walked += std::hypot(at.first - p.last_at.first, at.second - p.last_at.second); p.last_at = at; }
+			else p.last_at = {-1, -1};
+			if (me && foe) {
+				double dx = foe->sprite->position.x - me->sprite->position.x, dy = foe->sprite->position.y - me->sprite->position.y, d = std::hypot(dx, dy);
+				if (!p.free && d > 420) { f.halt(); f.set_trigger_mode(Fps::kTriggerFree); p.free = true; } // far: OpenBW walks it there
+				else if (p.free && d < 260) { f.set_trigger_mode(Fps::kTriggerUp); p.free = false; p.direct_since = fr; f.go_to(foe->sprite->position.x, foe->sprite->position.y); }
+				if (p.free && fr % 24 == 0 && (me->order_target.unit != foe || me->order_type->id != Orders::AttackUnit)) { g.select(me); g.smart_order(foe->sprite->position, foe); }
+				if (!p.free && fr - p.direct_since > 12) { // circle-strafe, changing sides, and fire whenever the gun is ready
+					double side = (fr / 20) % 2 ? 1 : -1; f.drive(-dy * side + dx * 0.25, dx * side + dy * 0.25);
+					if (f.in_range(foe)) f.fire(foe);
+				}
+			} else f.drive(0, 0);
+			double x, y; // what the camera would show now, for the next frame and the one after
+			if (f.view_position(0, x, y)) p.pred[0][fr + g.latency() - 1] = {x, y, id};
+			if (f.view_position(1, x, y)) p.pred[1][fr + g.latency()] = {x, y, id};
+		};
+		session(h, j, data, map, port + 3, kFrames, script);
+		check(h.error.empty() && j.error.empty(), "both games ran (" + h.error + j.error + ")");
+		check(h.g.failure().empty() && j.g.failure().empty(), "no failure reported (\"" + h.g.failure() + j.g.failure() + "\")");
+		int d = first_difference(h, j);
+		check((int)h.hashes.size() == kFrames && (int)j.hashes.size() == kFrames && d < 0, "the two games hold the same state on all " + std::to_string(std::min(h.hashes.size(), j.hashes.size())) + " frames, the heroes' free movement included" + (d >= 0 ? " (first difference after step " + std::to_string(d) + ")" : ""));
+		check(h.walked > 150 && j.walked > 150, bwgame::format("both heroes walked in free movement (%.0f px, %.0f px)", h.walked, j.walked).c_str());
+		check(h.compared > 200 && j.compared > 200 && h.mispredicted == 0 && j.mispredicted == 0, bwgame::format("the camera's view, ahead of the simulation by the latency, is exactly where the hero ends up (%d and %d frames compared, %d and %d off)", h.compared, j.compared, h.mispredicted, j.mispredicted).c_str());
+		Fps& fh = *h.f; Fps& fj = *j.f;
+		check(fh.shots > 0 && fj.shots > 0, "both heroes shot while walking (" + std::to_string(fh.shots) + " and " + std::to_string(fj.shots) + " shots)");
+		check(fh.kills + fh.deaths > 0 && fh.kills == fj.deaths && fh.deaths == fj.kills, "the heroes fought and both games count the same deaths (" + std::to_string(fh.deaths) + ":" + std::to_string(fh.kills) + " / " + std::to_string(fj.kills) + ":" + std::to_string(fj.deaths) + ")");
 	}
 
 	std::cout << (failures ? "NETTEST FAILED" : "NETTEST PASSED") << "\n";
