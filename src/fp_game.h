@@ -169,6 +169,7 @@ public:
 	// ---- commands of the human player. Return whether OpenBW accepted them (two-player game: whether they were sent) ----
 	bool select(unit_t* u) { return select_units(&u, 1, false); }
 	bool select_add(unit_t* u) { return select_units(&u, 1, true); }
+	bool select(const std::vector<unit_t*>& us, bool add = false) { return !us.empty() && select_units(us.data(), std::min<size_t>(us.size(), 12), add); } // at most 12, as StarCraft
 	bool smart_order(xy pos, unit_t* target, bool queue = false) {
 		ActionWriter w; w.u8(20).u16(pos.x).u16(pos.y).u16(uid(target)).u16((int)UnitTypes::None).u8(queue); return command(w);
 	}

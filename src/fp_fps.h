@@ -173,6 +173,7 @@ public:
 	// The trigger is part of the simulation: a change goes out as a command (two-player game: applied `latency` frames later).
 	// Direct mode shoots only through fire(): its trigger stays up (or free while commanding the base).
 	void set_trigger(bool held) { if (!direct_) set_trigger_mode(held ? kTriggerDown : kTriggerUp); }
+	int trigger_mode() const { return sent_trigger_; } // the last one given
 	void set_trigger_mode(int mode) {
 		if (mode == sent_trigger_) return;
 		sent_trigger_ = mode;

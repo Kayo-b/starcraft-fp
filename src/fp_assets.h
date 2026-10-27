@@ -132,6 +132,40 @@ struct AnimSprite {
 	}
 };
 
+// ---- HD creep edges: TileSet/<name>.dds.grp. Layout verified on the 8 files (identical): u32 file size, u16 frame count
+// (37), u16 0x1004, frames from offset 8 as [u32 0, u16 w, u16 h, u32 size, DDS (128-byte header + DXT1 blocks)]; the alpha is
+// DXT1's punch-through. They are the frames of the SD creep GRP (TileSet/<name>.grp: u16 count, u16 32, u16 32, then per frame
+// u8 x, u8 y, u8 w, u8 h, u32 data offset) at 4x: an HD frame lies at 4x the SD offset within the 128-texel tile, moved in so
+// it ends at the tile's edge where it would stick out (bottom and right edges: the art is then exactly where the SD frame is).
+struct CreepEdges {
+	struct Frame { int x, y, w, h; size_t blocks; }; // HD texels within the 128x128 tile; DXT1 block data offset
+	std::vector<uint8_t> raw; std::vector<Frame> frames; bool ok = false;
+	bool load(std::vector<uint8_t> hd, const std::vector<uint8_t>& sd) {
+		raw = std::move(hd); frames.clear(); ok = false;
+		auto u16 = [](const std::vector<uint8_t>& b, size_t o) { return (unsigned)(b[o] | (b[o + 1] << 8)); };
+		if (raw.size() < 8 || sd.size() < 6 || (raw[0] | raw[1] << 8 | raw[2] << 16 | (size_t)raw[3] << 24) != raw.size()) return false;
+		unsigned n = u16(raw, 4); if (u16(sd, 0) != n || sd.size() < 6 + (size_t)n * 8) return false;
+		size_t pos = 8;
+		for (unsigned i = 0; i < n; ++i) {
+			if (pos + 12 + 128 > raw.size()) return false;
+			int w = (int)u16(raw, pos + 4), h = (int)u16(raw, pos + 6); size_t size = raw[pos + 8] | raw[pos + 9] << 8 | raw[pos + 10] << 16 | (size_t)raw[pos + 11] << 24;
+			if (w < 4 || h < 4 || w > 128 || h > 128 || w % 4 || h % 4 || size != 128 + (size_t)w * h / 2 || pos + 12 + size > raw.size()
+				|| memcmp(&raw[pos + 12], "DDS ", 4) != 0 || memcmp(&raw[pos + 12 + 84], "DXT1", 4) != 0) return false;
+			int sx = sd[6 + i * 8], sy = sd[6 + i * 8 + 1];
+			frames.push_back({std::min(4 * sx, 128 - w), std::min(4 * sy, 128 - h), w, h, pos + 12 + 128});
+			pos += 12 + size;
+		}
+		return ok = pos == raw.size();
+	}
+	// RGBA of HD texel (x, y) of frame f (texture coordinates); alpha 0 or 255
+	void texel(int f, int x, int y, uint8_t out[4]) const {
+		const Frame& fr = frames[f]; const uint8_t* blk = &raw[fr.blocks + ((size_t)(y / 4) * (fr.w / 4) + (x / 4)) * 8];
+		uint16_t c0 = blk[0] | (blk[1] << 8), c1 = blk[2] | (blk[3] << 8); int idx = (blk[4 + (y & 3)] >> (2 * (x & 3))) & 3;
+		out[3] = (c0 <= c1 && idx == 3) ? 0 : 255;
+		dxt1_texel(&raw[fr.blocks], fr.w, x, y, out);
+	}
+};
+
 // Unit names from rez/stat_txt.tbl (verified: 0-based entry == unit type id, e.g. 7 = "Terran SCV").
 struct NameTable {
 	std::vector<uint8_t> raw; std::vector<uint16_t> offs;
@@ -239,6 +273,19 @@ public:
 		return it->second.get();
 	}
 
+	// HD creep edges for this tileset (loaded once); nullptr when TileSet/<name>.dds.grp is not in the data directory
+	// (tools/casc_get.cjs extracts it; README) or does not match the verified layout: creep is then drawn without edges.
+	const CreepEdges* creep_edges() {
+		auto it = creep_.find(tileset_);
+		if (it == creep_.end()) {
+			auto c = std::make_unique<CreepEdges>();
+			try { a_vector<uint8_t> hd, sd; files_(hd, bwgame::format("TileSet/%s.dds.grp", tileset_name(tileset_))); files_(sd, bwgame::format("TileSet/%s.grp", tileset_name(tileset_)));
+				c->load(std::vector<uint8_t>(hd.begin(), hd.end()), std::vector<uint8_t>(sd.begin(), sd.end())); } catch (const std::exception&) {}
+			it = creep_.emplace(tileset_, std::move(c)).first;
+		}
+		return it->second->ok ? it->second.get() : nullptr;
+	}
+
 	// Lookup only (never loads), so it is safe to call from render threads after update_units() preloaded the sprites.
 	const AnimSprite* sprite_cached(int image_id) const {
 		if (auto a = alias_.find(image_id); a != alias_.end()) image_id = a->second;
@@ -257,6 +304,7 @@ private:
 	std::map<size_t, std::unique_ptr<HdTiles>> tiles_;
 	std::map<int, AnimSprite> sprites_;
 	std::map<int, std::unique_ptr<SdTiles>> sd_;
+	std::map<int, std::unique_ptr<CreepEdges>> creep_;
 	NameTable names_; bool names_loaded_ = false; std::set<int> missing_;
 	std::map<int, int> alias_; std::vector<int> grp_first_; bool grp_loaded_ = false; // anim_of
 public:

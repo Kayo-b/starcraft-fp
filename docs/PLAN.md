@@ -207,6 +207,29 @@ client (command card, hotkeys) and no Remastered client (closed, no API; see the
   end, as recorded). Not covered: our own relay, NAT traversal, rejoining after a drop; a recording of a game whose program
   crashed ends at its last flushed frame (every 240 frames) without the 'e' record (plays as far as it goes).
 
+### Phase 5 — top-down view (`fp-topdown`)
+Asked for 2026-10-27 (after an assessment: OpenBW's own `ui/ui.h` draws the 1998 view from the 1.16.1 MPQs, or our own renderer
+from the HD art the game already loads; the user chose the latter).
+- **T1** `done` The classic top-down camera in every mode (`src/fp_topdown.h`; V, `--topdown`). Drawn from the HD art: terrain
+  tiles, creep (the tileset's creep tiles, per tile) and its edges (`TileSet/<tileset>.dds.grp`, 8 more files to extract; format
+  and placement in the README), every image of every sprite (shadows darken, effects keep their own colours, turrets, overlays,
+  bullets, remnants) placed by the anim box rules, in StarCraft's order (elevation, then y up to the ground units' level, turrets
+  over their base; images bottom up; selection circles under a unit's first image that is not a shadow). What is drawn comes from
+  `Renderer::update_units`, so the two views agree: units between simulation frames, the viewer's fog of war (ground dimmed,
+  other players' sprites and effects only where seen, remembered buildings dimmed and not pickable, an undetected cloaked unit as
+  a shimmer; `UnitView::src` added for it). Art is decoded once into a cache at the zoom's mip level (premultiplied, box-filtered;
+  player-colour mask kept), so zooms 1, 2 and 4 copy texels 1:1 (1.5 and 3 pick); rows split across threads, the same pixels on any
+  number. 1280x800 (twice `--res`) in ~2.5 ms on 12 cores, ~11 ms on one; a first view decodes for ~10-100 ms. Controls: scroll
+  (WASD, arrows, window edge), wheel zoom about the mouse, MMB drag, minimap (terrain, units, the view; click/drag moves it, RMB
+  orders there); LMB select / box (own units, units before buildings, 12: `Game::select(vector)`), RMB smart order, B at the mouse,
+  E into the unit in first person; in a replay a click follows a unit. With a hero (multiplayer and FPS) F commands from above (V:
+  the first-person free camera instead), V from the hero steps out too. `fp_view --topdown` renders it (the debug minitile map it
+  replaced is gone); `tools/golden.sh` adds a top-down image per map. Tests: `fp_topdowntest` (new: terrain texel for texel, creep and
+  edges, every pixel, order and picking, box, circles and bars, fog, memory, shimmer, threads, cost); every window self-test plan goes
+  through it (replay: V, scroll, wheel, click-follow, minimap; sandbox: click and box select, RMB order; FPS: V and F; multiplayer: F
+  from above with the other base hidden; recordings). First-person golden views unchanged (52 frames, pixel for pixel). Not done:
+  the warp-in texture, hallucination tint, emissive layers, control groups and hotkeys; not played by a person yet.
+
 ## Verification (every milestone)
 - `make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=...` (plus `fp_terraintest` from M1).
 - Window self-tests with `SDL_AUDIODRIVER=dummy`: `fp_play --game MAP --fps --weapons MOD_DIR --selftest-input`,

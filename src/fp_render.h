@@ -27,6 +27,7 @@ struct UnitView {
 	int owner, type, image, frame; bool flip;
 	int heading; bool directional; int frame_base;
 	const unit_t* ptr; // null for what the viewer cannot target: a building remembered in the fog, an undetected cloaked unit
+	const unit_t* src = nullptr; // the unit drawn (also an undetected one); null for a remembered building
 	double hp_frac = 1, shield_frac = 0; // 0..1 of the unit type's maximum; shield_frac is 0 for units without shields
 	const M3Model* model = nullptr; double mscale = 0, myaw = 0; // drawn as this 3D model (px per model unit, yaw) instead of a sprite
 	// Fog of war: brightness where it stands (Renderer::fog_at), and how it is drawn: plain, see-through (a cloaked unit
@@ -127,7 +128,7 @@ public:
 			{ auto& b = units_.back(); double mh = u->unit_type->hitpoints.raw_value ? u->unit_type->hitpoints.raw_value / 256.0 : 0, ms = u->unit_type->shield_points;
 			  if (mh > 0) b.hp_frac = std::max(0.0, std::min(1.0, (u->hp.raw_value / 256.0) / mh));
 			  if (u->unit_type->has_shield && ms > 0) b.shield_frac = std::max(0.0, std::min(1.0, (u->shield_points.raw_value / 256.0) / ms));
-			  b.look = look; b.dim = fog_at(b.x, b.y); }
+			  b.look = look; b.dim = fog_at(b.x, b.y); b.src = u; }
 			assets_.sprite((int)mi->image_type->id);
 			// Finished buildings and mineral fields with a model: scaled so its footprint covers the unit's (by area); a
 			// cloaked unit stays a sprite (see-through and shimmer are drawn on sprites)
@@ -686,7 +687,7 @@ private:
 	struct Memory { UnitView view; int tx0, ty0, tx1, ty1; unsigned tick; };
 	std::map<uint16_t, Memory> memory_; unsigned memory_tick_ = 0;
 	void remember(const unit_t* u, const UnitView& seen) {
-		Memory& m = memory_[fn_.get_unit_id(u).raw_value]; m.view = seen; m.view.ptr = nullptr; m.tick = memory_tick_;
+		Memory& m = memory_[fn_.get_unit_id(u).raw_value]; m.view = seen; m.view.ptr = nullptr; m.view.src = nullptr; m.tick = memory_tick_;
 		xy size = u->unit_type->placement_size, pos = u->sprite->position;
 		m.tx0 = std::max(0, (pos.x - size.x / 2) / 32); m.ty0 = std::max(0, (pos.y - size.y / 2) / 32);
 		m.tx1 = std::min((int)gs_.map_tile_width, m.tx0 + (size.x + 31) / 32); m.ty1 = std::min((int)gs_.map_tile_height, m.ty0 + (size.y + 31) / 32);

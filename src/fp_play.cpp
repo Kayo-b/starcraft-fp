@@ -31,9 +31,14 @@
 //   [LMB select unit under crosshair (Shift adds), RMB order (move/attack/gather/rally), E possess/release the selected unit,
 //    WASD then moves the possessed unit, T train worker, Y train combat unit, B build supply, X stop]
 //   {LMB (hold) fire, RMB move to the crosshair; the camera stays on the hero}
-//   Multiplayer: the hero view takes the FPS controls; F switches to commanding the base (free camera, the game-mode
+//   Multiplayer: the hero view takes the FPS controls; F switches to commanding the base (from above, the game-mode
 //   controls in brackets; the hero fights on its own meanwhile) and back.
+//   V: top-down view (the classic camera) / first person, in every mode (with a hero: commanding from above). There:
+//   WASD / arrows / the mouse at the window's edge scroll, the wheel zooms, MMB drags the map; LMB selects (drag: a box
+//   of your units; in a replay a click follows the unit), RMB orders the selection, B builds at the mouse, E goes into
+//   the selected unit in first person; --topdown starts there.
 #include "fp_render.h"
+#include "fp_topdown.h"
 #include "fp_game.h"
 #include "fp_fps.h"
 #include "fp_weapon.h"
@@ -56,7 +61,7 @@ using Clock = std::chrono::steady_clock;
 
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons, models; bool replay = true, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false, model_units = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
+	std::string data, input, game_map, screenshot, weapons, models; bool replay = true, topdown = false, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false, model_units = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 	RenderParams rp;
@@ -274,6 +279,9 @@ static void push_key(SDL_EventType t, SDL_Scancode sc, SDL_Keycode sym, uint16_t
 static void push_button(Uint8 b) { SDL_Event ev{}; ev.type = SDL_MOUSEBUTTONDOWN; ev.button.button = b; SDL_PushEvent(&ev); }
 static void push_button_up(Uint8 b) { SDL_Event ev{}; ev.type = SDL_MOUSEBUTTONUP; ev.button.button = b; SDL_PushEvent(&ev); }
 static void push_motion(int xrel) { SDL_Event ev{}; ev.type = SDL_MOUSEMOTION; ev.motion.xrel = xrel; SDL_PushEvent(&ev); }
+static void push_motion_at(int x, int y) { SDL_Event ev{}; ev.type = SDL_MOUSEMOTION; ev.motion.x = x; ev.motion.y = y; SDL_PushEvent(&ev); }
+static void push_button_at(Uint8 b, int x, int y, bool down) { SDL_Event ev{}; ev.type = down ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP; ev.button.button = b; ev.button.x = x; ev.button.y = y; SDL_PushEvent(&ev); }
+static void push_wheel(int y) { SDL_Event ev{}; ev.type = SDL_MOUSEWHEEL; ev.wheel.y = y; ev.wheel.preciseY = (float)y; SDL_PushEvent(&ev); }
 
 // Scripted run without a window. Collision is checked against OpenBW's own is_walkable(), independent of the
 // renderer's cached grid, so a grid/simulation mismatch or a broken move() is caught.
@@ -367,6 +375,7 @@ int main(int argc, char** argv) {
 		else if (k == "--record") a.record = next();
 		else if (k == "--no-record") a.no_record = true;
 		else if (k == "--watch") a.watch = next();
+		else if (k == "--topdown") a.topdown = true;
 		else die("unknown option");
 	}
 	if (!a.watch.empty() && (a.net || a.autotest || a.fps || !a.input.empty())) die("--watch plays a recording: no --host/--join, --fps, --replay/--map or --autotest with it (--game MAP only names where the map is)");
@@ -385,7 +394,7 @@ int main(int argc, char** argv) {
 		a.fps = true; a.speed = 1.0; a.netopt.wait_seconds = a.netopt.host ? 0 : 60; // the host waits for a player; a joiner retries for a minute
 		if (a.netopt.name == "player") if (const char* u = getenv("USER")) if (*u) a.netopt.name = u;
 	}
-	if (a.data.empty() || (a.input.empty() && a.game_map.empty() && a.watch.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [(--host [PORT] [--latency N|auto] | --join HOST[:PORT]) [--name NAME] [--no-record]] [--record FILE.fpr] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE | --watch FILE.fpr [--game MAP]) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--selftest-input] [--autotest [--screenshot F.ppm]]");
+	if (a.data.empty() || (a.input.empty() && a.game_map.empty() && a.watch.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [(--host [PORT] [--latency N|auto] | --join HOST[:PORT]) [--name NAME] [--no-record]] [--record FILE.fpr] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE | --watch FILE.fpr [--game MAP]) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--topdown] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
 		std::unique_ptr<ModelLibrary> models;
@@ -442,15 +451,94 @@ int main(int argc, char** argv) {
 			cmd.say(watch_slot < 0 ? std::string("Seeing all of it (free camera)") : "Through " + s.name_of(watch_slot) + "'s eyes" + (v.follow ? "" : " (their hero is down)"));
 			s.r->update_units(acc / sim_dt, 0);
 		};
+		// Top-down view (V): the classic camera over the same snapshot as the first-person view, at twice its resolution (the
+		// HD art has 4 texels per map px). Commanding in a game with a hero (F) is from above unless V switched that to the
+		// first-person free camera. The mouse: its place on the top-down frame (td px; -1 outside), a box being dragged.
+		std::unique_ptr<TopDown> td; std::vector<uint32_t> td_fb((size_t)a.rw * 2 * a.rh * 2);
+		SDL_Texture* td_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, a.rw * 2, a.rh * 2);
+		auto make_td = [&] { td = std::make_unique<TopDown>(s.st(), s.fn(), assets, a.rw * 2, a.rh * 2); };
+		make_td();
+		bool topdown = false, td_commanding = true, td_drag = false, td_pan = false, td_mm = false; TopView tv; double mouse_x = -1, mouse_y = -1, drag_x = 0, drag_y = 0;
+		auto scene = [&]() { int ow, oh; SDL_GetRendererOutputSize(ren, &ow, &oh); double sc = std::min((double)ow / a.rw, (double)oh / a.rh); // the scene letterboxed, aspect kept
+			return SDL_Rect{(int)((ow - a.rw * sc) / 2), (int)((oh - a.rh * sc) / 2), (int)(a.rw * sc), (int)(a.rh * sc)}; };
+		auto win_to_td = [&](double wx, double wy, double& x, double& y) { // window coordinates (mouse events) to the top-down frame's px
+			int ww, wh, ow, oh; SDL_GetWindowSize(win, &ww, &wh); SDL_GetRendererOutputSize(ren, &ow, &oh); SDL_Rect d = scene();
+			x = (wx * ow / std::max(1, ww) - d.x) * td->width() / std::max(1, d.w); y = (wy * oh / std::max(1, wh) - d.y) * td->height() / std::max(1, d.h); };
+		auto td_to_win = [&](double x, double y, int& wx, int& wy) {
+			int ww, wh, ow, oh; SDL_GetWindowSize(win, &ww, &wh); SDL_GetRendererOutputSize(ren, &ow, &oh); SDL_Rect d = scene();
+			wx = (int)std::lround((d.x + x * d.w / td->width()) * ww / std::max(1, ow)); wy = (int)std::lround((d.y + y * d.h / td->height()) * wh / std::max(1, oh)); };
+		auto set_topdown = [&](bool on) {
+			if (on == topdown) return;
+			topdown = on; td_drag = td_pan = td_mm = false; mouse_x = mouse_y = -1;
+			if (on) { tv.x = v.cam.x; tv.y = v.cam.y; td->clamp(tv); SDL_SetRelativeMouseMode(SDL_FALSE); }
+			else { if (!v.follow && s.r->can_stand(tv.x, tv.y, v.radius)) { v.cam.x = tv.x; v.cam.y = tv.y; } // the first-person camera where the view was
+				SDL_SetRelativeMouseMode(captured ? SDL_TRUE : SDL_FALSE); }
+		};
 		auto set_commander = [&](bool on) {
 			if (!s.fps || on == commander) return;
 			commander = on; firing = false; moving = false;
-			if (on) { v.follow = nullptr; if (s.fps->direct()) s.fps->halt(); s.fps->set_trigger_mode(Fps::kTriggerFree); cmd.say("Commanding your base: F back to your hero (it fights on its own meanwhile)"); }
-			else { s.fps->set_trigger_mode(Fps::kTriggerUp); if (unit_t* h = s.fps->player()) { v.follow = h; s.game->select(h); } cmd.say("Back in your hero"); }
+			if (on) { v.follow = nullptr; if (s.fps->direct()) s.fps->halt(); s.fps->set_trigger_mode(Fps::kTriggerFree);
+				if (unit_t* h = s.fps->player()) { v.cam.x = h->sprite->position.x; v.cam.y = h->sprite->position.y; } set_topdown(td_commanding);
+				cmd.say(s.net() ? "Commanding your base: F back to your hero (it fights on its own meanwhile)" : "Your hero fights on its own: F back into it"); }
+			else { set_topdown(false); s.fps->set_trigger_mode(Fps::kTriggerUp); if (unit_t* h = s.fps->player()) { v.follow = h; s.game->select(h); } cmd.say("Back in your hero"); }
 		};
+		// The mouse in the top-down view: LMB click selects (Shift adds) or, in a replay, follows the unit; LMB drag selects
+		// your units in the box (units before buildings, 12 at most); RMB orders the selection; the wheel zooms about the
+		// mouse; MMB drags the map.
+		auto td_mouse = [&](const SDL_Event& e) {
+			if (e.type == SDL_MOUSEWHEEL) {
+				int k = 0; while (k < 4 && TopDown::kZooms[k] < tv.zoom - 1e-9) ++k;
+				float wy = e.wheel.y ? (float)e.wheel.y : e.wheel.preciseY; if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) wy = -wy;
+				int nk = std::max(0, std::min(4, k + (wy > 0 ? 1 : wy < 0 ? -1 : 0)));
+				double fx = mouse_x >= 0 ? mouse_x : td->width() / 2.0, fy = mouse_y >= 0 ? mouse_y : td->height() / 2.0, mx, my; td->to_map(tv, fx, fy, mx, my);
+				tv.zoom = TopDown::kZooms[nk]; tv.x = mx - (fx - td->width() / 2.0) / tv.zoom; tv.y = my - (fy - td->height() / 2.0) / tv.zoom; td->clamp(tv); return;
+			}
+			double x, y; if (e.type == SDL_MOUSEMOTION) win_to_td(e.motion.x, e.motion.y, x, y); else win_to_td(e.button.x, e.button.y, x, y);
+			if (td_pan && e.type == SDL_MOUSEMOTION && mouse_x >= 0) { tv.x -= (x - mouse_x) / tv.zoom; tv.y -= (y - mouse_y) / tv.zoom; td->clamp(tv); v.follow = nullptr; }
+			mouse_x = x; mouse_y = y;
+			double mmx, mmy; const bool on_mm = td->on_minimap(x, y, mmx, mmy);
+			if (e.type == SDL_MOUSEMOTION) { if (td_mm && on_mm) { tv.x = mmx; tv.y = mmy; td->clamp(tv); } return; }
+			bool shift = SDL_GetModState() & KMOD_SHIFT, down = e.type == SDL_MOUSEBUTTONDOWN;
+			if (e.button.button == SDL_BUTTON_LEFT && !down && td_mm) { td_mm = false; return; }
+			if (on_mm && down && e.button.button == SDL_BUTTON_LEFT) { td_mm = true; v.follow = nullptr; tv.x = mmx; tv.y = mmy; td->clamp(tv); return; }
+			if (on_mm && down && e.button.button == SDL_BUTTON_RIGHT) { if (!s.live()) return; if (!s.game->selected()) cmd.say("Select a unit first (left-click, or drag a box)"); else s.game->smart_order(xy{(int)mmx, (int)mmy}, nullptr, shift); return; }
+			if (e.button.button == SDL_BUTTON_MIDDLE) { td_pan = down; return; }
+			if (e.button.button == SDL_BUTTON_LEFT && down) { td_drag = true; drag_x = x; drag_y = y; return; }
+			if (e.button.button == SDL_BUTTON_LEFT && td_drag) {
+				td_drag = false;
+				if (std::hypot(x - drag_x, y - drag_y) < 5) { // a click
+					unit_t* u = const_cast<unit_t*>(td->unit_at(x, y));
+					if (!s.live()) { v.follow = u; if (u) cmd.say("Following " + cmd.name(u) + " (scroll or F to let go)"); }
+					else if (u) { if (shift && cmd.own(u)) s.game->select_add(u); else s.game->select(u); }
+					return;
+				}
+				if (!s.live()) return;
+				std::vector<unit_t*> units, buildings;
+				for (const unit_t* c : td->units_in(drag_x, drag_y, x, y)) if (cmd.own(c)) (s.fn().ut_building(c) ? buildings : units).push_back(const_cast<unit_t*>(c));
+				if (units.empty()) units = buildings;
+				if (!units.empty()) { s.game->select(units, shift); cmd.say(bwgame::format("Selected %d unit%s", (int)std::min<size_t>(12, units.size()), units.size() == 1 ? "" : "s")); }
+				return;
+			}
+			if (e.button.button == SDL_BUTTON_RIGHT && down && s.live()) {
+				Game& G = *s.game; double mx, my; td->to_map(tv, x, y, mx, my);
+				const unit_t* u = td->unit_at(x, y);
+				if (!G.selected()) cmd.say("Select a unit first (left-click, or drag a box)");
+				else if (u) G.smart_order(u->sprite->position, const_cast<unit_t*>(u), shift);
+				else if (mx >= 0 && my >= 0 && mx < s.r->map_w() && my < s.r->map_h()) G.smart_order(xy{(int)mx, (int)my}, nullptr, shift);
+			}
+		};
+
+		if (a.topdown) { if (s.fps) set_commander(true); else set_topdown(true); }
 		SelfTest st; bool live_test = a.selftest_input && s.live() && !s.fps, fps_test = a.selftest_input && s.fps && !s.net(), net_test = a.selftest_input && s.net(), watch_test = a.selftest_input && s.watch;
 
 		// ---- scripted selftest plans ----
+		// --screenshot: frames of the view shown at named steps
+		auto shot = [&](const char* tag) { if (a.screenshot.empty()) return; std::string f = a.screenshot; size_t dot = f.rfind('.'); f.insert(dot == std::string::npos ? f.size() : dot, tag);
+			if (topdown) save_ppm(f, td_fb, td->width(), td->height()); else save_ppm(f, fb, a.rw, a.rh); };
+		// top-down: the mouse to a point of the frame (td px), a click there, a map point's place on the frame
+		auto td_move = [&](double x, double y) { int wx, wy; td_to_win(x, y, wx, wy); push_motion_at(wx, wy); };
+		auto td_click = [&](Uint8 b, double x, double y) { int wx, wy; td_to_win(x, y, wx, wy); push_motion_at(wx, wy); push_button_at(b, wx, wy, true); push_button_at(b, wx, wy, false); };
+		auto td_at = [&](double mx, double my, double& x, double& y) { td->to_screen(tv, mx, my, x, y); return x > 30 && y > 30 && x < td->width() - 30 && y < td->height() - 30; };
 		double st_x0 = v.cam.x, st_y0 = v.cam.y, st_h0 = v.cam.heading; int st_pause_f = 0, st_before_restart = 0; bool st_paused_at_check = false;
 		if (a.selftest_input && !s.live() && !s.watch) {
 			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
@@ -469,7 +557,22 @@ int main(int argc, char** argv) {
 			K(3.8, "restart", [&] { st_before_restart = s.frame(); push_key(SDL_KEYDOWN, SDL_SCANCODE_R, SDLK_r); });
 			K(4.1, "check restart", [&] { st.check("R restarts the replay", s.frame() < st_before_restart && s.frame() >= a.start_frame && s.frame() < a.start_frame + 40);
 				FILE* f = fopen("fp_shot_000.ppm", "rb"); st.check("F12 wrote a screenshot", f != nullptr); if (f) fclose(f); });
-			K(4.3, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
+			static double td_x0 = 0; static bool east = true;
+			K(4.3, "V", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_V, SDLK_v); });
+			K(4.5, "check top-down", [&] { st.check("V switches to the top-down view (" + std::to_string(td->drawn()) + " images drawn)", topdown && td->drawn() > 0);
+				td_x0 = tv.x; east = tv.x < s.r->map_w() / 2; push_key(SDL_KEYDOWN, east ? SDL_SCANCODE_D : SDL_SCANCODE_A, east ? SDLK_d : SDLK_a); });
+			K(4.9, "release", [&] { push_key(SDL_KEYUP, east ? SDL_SCANCODE_D : SDL_SCANCODE_A, east ? SDLK_d : SDLK_a); });
+			K(5.0, "check scroll", [&] { st.check("D / A scroll it (" + std::to_string((int)std::fabs(tv.x - td_x0)) + " px)", std::fabs(tv.x - td_x0) > 50); td_move(td->width() / 2.0, td->height() / 2.0); push_wheel(1); });
+			K(5.2, "check zoom", [&] { st.check(bwgame::format("the wheel zooms in (x%.1f)", tv.zoom).c_str(), tv.zoom > 2); });
+			K(5.3, "click a unit", [&] { for (auto& u : s.r->units()) { double x, y; if (u.ptr && u.owner < 8 && td_at(u.x, u.y, x, y)) { td_click(SDL_BUTTON_LEFT, x, y); return; } }
+				st.check("a unit in view to click", false); });
+			K(5.6, "check follow", [&] { st.check("in a replay a click on a unit follows it" + (v.follow ? " (" + cmd.name(v.follow) + ")" : std::string()), v.follow != nullptr); shot("_topdown");
+				int x0 = 8, y0 = td->height() - 8 - td->height() / 4, n = td->height() / 4; td_click(SDL_BUTTON_LEFT, x0 + n * 0.5, y0 + n * 0.5); }); // the minimap's centre
+			K(5.7, "check minimap", [&] { st.check(bwgame::format("a click on the minimap's middle moves the view to the map's middle (%.0f,%.0f)", tv.x, tv.y).c_str(),
+				std::fabs(tv.x - s.r->map_w() / 2) < 40 && std::fabs(tv.y - s.r->map_h() / 2) < 40 && !v.follow); });
+			K(5.8, "V", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_V, SDLK_v); });
+			K(6.0, "check first person", [&] { st.check("V again: back in first person", !topdown); });
+			K(6.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 		// Helpers for the live-game plan live in this scope, not inside the if-block: the plan's lambdas run later in the main loop.
 		auto G = [&]() -> Game& { return *s.game; };
@@ -527,11 +630,30 @@ int main(int argc, char** argv) {
 			K(8.5, "B", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_B, SDLK_b); });
 			K(8.9, "diag build", [&] { std::cout << "  [diag] after B: msg=\"" << cmd.msg << "\" minerals " << G().minerals() << " SCV order " << (int)w->order_type->id << " at (" << w->sprite->position.x << "," << w->sprite->position.y << ")\n"; });
 			K(14.0, "check build", [&] { int n = G().count([&](unit_t* u) { return u->owner == G().owner() && u->unit_type->id == UnitTypes::Terran_Supply_Depot; }); st.check("B places a Supply Depot (" + std::to_string(depots0) + " -> " + std::to_string(n) + ")", n == depots0 + 1); });
-			K(14.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
+			static std::vector<unit_t*> boxed; static int scvs_on_screen = 0;
+			K(14.1, "V", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_V, SDLK_v); });
+			K(14.3, "check top-down", [&] { st.check("V: the top-down view", topdown); v.follow = nullptr; tv.x = cc->sprite->position.x; tv.y = cc->sprite->position.y; tv.zoom = 2; td->clamp(tv); });
+			K(14.5, "click the CC", [&] { double x, y; td_at(cc->sprite->position.x, cc->sprite->position.y, x, y); td_click(SDL_BUTTON_LEFT, x, y); });
+			K(14.7, "check click", [&] { st.check("a click on the Command Center selects it", G().selected() == cc); });
+			K(14.8, "drag a box", [&] { double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; scvs_on_screen = 0;
+				for (auto& u : s.r->units()) { double x, y; if (u.ptr && u.owner == G().owner() && u.type == (int)UnitTypes::Terran_SCV && td_at(u.x, u.y, x, y) && scvs_on_screen < 12) {
+					++scvs_on_screen; x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y); } }
+				int a0, b0, a1, b1; td_to_win(x0 - 3, y0 - 3, a0, b0); td_to_win(x1 + 3, y1 + 3, a1, b1);
+				push_motion_at(a0, b0); push_button_at(SDL_BUTTON_LEFT, a0, b0, true); push_motion_at(a1, b1); push_button_at(SDL_BUTTON_LEFT, a1, b1, false); });
+			K(15.1, "check box", [&] { boxed = G().selection(); int n = 0; for (unit_t* u : boxed) n += u->unit_type->id == UnitTypes::Terran_SCV;
+				st.check("dragging a box selects your units in it, without the buildings (" + std::to_string(n) + " SCVs of " + std::to_string(boxed.size()) + " selected; " + std::to_string(scvs_on_screen) + " in the box)", n >= 2 && n == (int)boxed.size() && n >= scvs_on_screen - 1); });
+			K(15.2, "RMB", [&] { // open floor in view, away from units
+				for (int k = 0; k < 400; ++k) { double x = 60 + (k * 131) % (td->width() - 120), y = 60 + (k * 71) % (td->height() - 120), mx, my; td->to_map(tv, x, y, mx, my);
+					bool clear = s.r->can_stand(mx, my, 16); for (auto& u : s.r->units()) if (std::hypot(u.x - mx, u.y - my) < u.r + 48) clear = false;
+					if (clear) { gx = mx; gy = my; td_click(SDL_BUTTON_RIGHT, x, y); return; } }
+				st.check("open floor in view to order the SCVs to", false); });
+			K(17.6, "check order", [&] { int n = 0; for (unit_t* u : boxed) n += std::hypot(u->sprite->position.x - gx, u->sprite->position.y - gy) < 80;
+				st.check("right-click on the floor sends them there (" + std::to_string(n) + " of " + std::to_string(boxed.size()) + " arrived)", n >= 1); shot("_topdown"); });
+			K(17.8, "V", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_V, SDLK_v); });
+			K(18.0, "check first person", [&] { st.check("V again: back in first person", !topdown); });
+			K(18.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 
-		// --screenshot during the FPS self-test: frames at named steps (defined here: the plan's lambdas run after the block below)
-		auto shot = [&](const char* tag) { if (!a.screenshot.empty()) { std::string f = a.screenshot; size_t dot = f.rfind('.'); f.insert(dot == std::string::npos ? f.size() : dot, tag); save_ppm(f, fb, a.rw, a.rh); } };
 		if (fps_test) { // FPS plan: aim, hold fire, feedback (animation, sound, pain), death and restart, all through real input events
 			speed = 4.0;
 			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
@@ -570,7 +692,11 @@ int main(int argc, char** argv) {
 			K(8.3, "M", [&] { mode0 = s.r->model_mode(); push_key(SDL_KEYDOWN, SDL_SCANCODE_M, SDLK_m); });
 			K(8.5, "check M", [&] { if (s.models) st.check("M cycles the 3D models (" + std::to_string(mode0) + " -> " + std::to_string(s.r->model_mode()) + ")", s.r->model_mode() == (mode0 + 1) % 3);
 			                         else st.check("M without models says so", cmd.msg.find("No models") != std::string::npos); });
-			K(8.7, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
+			K(8.7, "V", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_V, SDLK_v); });
+			K(8.9, "check from above", [&] { st.check("V steps out of the hero to watch from above; it fights on its own", topdown && commander && F_().trigger_mode() == Fps::kTriggerFree && td->drawn() > 0); shot("_topdown"); });
+			K(9.0, "F", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_F, SDLK_f); });
+			K(9.2, "check hero", [&] { st.check("F: back in the hero, in first person", !topdown && !commander && v.follow == F_().player()); });
+			K(9.3, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 
 		if (net_test) { // multiplayer plan, run by both players' games (start both with --selftest-input)
@@ -587,9 +713,11 @@ int main(int argc, char** argv) {
 				float a = s.r->fog_at(mine.x, mine.y), b = s.r->fog_at(theirs.x, theirs.y);
 				st.check(bwgame::format("the terrain is lit around your base (%.2f) and dimmed at the other one, never seen (%.2f)", a, b).c_str(), a == Renderer::kLit && b == Renderer::kUnexplored); });
 			K(2.8, "F", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_F, SDLK_f); });
-			K(3.1, "check commander", [&] { st.check("F steps out of the hero to command the base (free camera)", commander && v.follow == nullptr); });
+			K(3.1, "check commander", [&] { st.check("F steps out of the hero to command the base, from above", commander && v.follow == nullptr && topdown);
+				xy t = s.game->start_location(s.game->enemy()); tv.x = t.x; tv.y = t.y; td->clamp(tv); });
+			K(3.15, "check fog from above", [&] { st.check("seen from above, the other base in the fog shows none of its units (" + std::to_string(td->drawn_of(s.game->enemy())) + " of their images drawn)", td->drawn_of(s.game->enemy()) == 0 && td->drawn() > 0); });
 			K(3.2, "F", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_F, SDLK_f); });
-			K(3.5, "check hero view", [&] { st.check("F again: back in the hero", !commander && v.follow == s.fps->player() && s.fps->player() != nullptr); });
+			K(3.5, "check hero view", [&] { st.check("F again: back in the hero, in first person", !commander && !topdown && v.follow == s.fps->player() && s.fps->player() != nullptr); });
 			K(3.6, "P", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_P, SDLK_p); });
 			K(3.9, "check no pause", [&] { st.check("P does not pause a multiplayer game", !paused && cmd.msg.find("No pause") != std::string::npos); });
 			if (s.fps->direct()) { // free movement: the hero walks on W, the camera with it (ahead of the simulation by the latency)
@@ -616,8 +744,12 @@ int main(int argc, char** argv) {
 			K(1.2, "check 2", [&, hi] { st.check("2: through the second player's", s.r->viewer() == hi && v.follow && v.follow == s.watched->hero(hi)); });
 			K(1.3, "0", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_0, SDLK_0); });
 			K(1.5, "check 0", [&] { st.check("0: all of it, free camera", s.r->viewer() == -1 && !v.follow); });
-			K(1.6, "fast", [&] { speed = 16; });
-			double end_t = 1.6 + s.end_frame() / 23.81 / 16 + 1.5;
+			K(1.6, "V", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_V, SDLK_v); });
+			K(1.8, "check top-down", [&] { st.check("V: the recording from above (" + std::to_string(td->drawn()) + " images)", topdown && td->drawn() > 0); });
+			K(1.9, "V", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_V, SDLK_v); });
+			K(2.0, "check first person", [&] { st.check("V again: first person", !topdown); });
+			K(2.1, "fast", [&] { speed = 16; });
+			double end_t = 2.1 + s.end_frame() / 23.81 / 16 + 1.5;
 			K(end_t, "check end", [&] { st.check("it plays to its end (frame " + std::to_string(s.frame()) + " of " + std::to_string(s.end_frame()) + "), every frame's state as recorded" + (s.game->failure().empty() ? "" : ": " + s.game->failure()),
 				s.done() && s.frame() >= s.end_frame() && s.game->failure().empty()); });
 			K(end_t + 0.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
@@ -629,9 +761,10 @@ int main(int argc, char** argv) {
 			SDL_Event e;
 			while (SDL_PollEvent(&e)) {
 				// selftest: only the scripted (windowID 0) input counts; real keyboard/mouse activity is ignored
-				if (a.selftest_input && ((e.type == SDL_MOUSEMOTION && e.motion.windowID != 0) || (e.type == SDL_MOUSEBUTTONDOWN && e.button.windowID != 0) || ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && e.key.windowID != 0))) continue;
+				if (a.selftest_input && ((e.type == SDL_MOUSEMOTION && e.motion.windowID != 0) || ((e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) && e.button.windowID != 0) || (e.type == SDL_MOUSEWHEEL && e.wheel.windowID != 0) || ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && e.key.windowID != 0))) continue;
 				const bool input_ok = captured || a.selftest_input;
 				if (e.type == SDL_QUIT) run = false;
+				else if (topdown && (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP || e.type == SDL_MOUSEWHEEL)) td_mouse(e);
 				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-kMaxPitch * a.rh, std::min(kMaxPitch * a.rh, v.cam.pitch - e.motion.yrel * 0.8)); }
 				else if (e.type == SDL_MOUSEBUTTONUP && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = false; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && !commander && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
@@ -654,22 +787,30 @@ int main(int argc, char** argv) {
 					keys[e.key.keysym.scancode & (SDL_NUM_SCANCODES - 1)] = true;
 					switch (e.key.keysym.sym) {
 						case SDLK_q: run = false; break;
-						case SDLK_ESCAPE: captured = !captured; SDL_SetRelativeMouseMode(captured ? SDL_TRUE : SDL_FALSE); break;
+						case SDLK_ESCAPE: captured = !captured; if (!topdown) SDL_SetRelativeMouseMode(captured ? SDL_TRUE : SDL_FALSE); break;
+						case SDLK_v: // top-down / first person; a hero is played in first person, so with one V steps out to command from above
+							if (s.fps && !commander) { td_commanding = true; set_commander(true); break; }
+							set_topdown(!topdown); if (s.fps) td_commanding = topdown;
+							cmd.say(topdown ? "Top-down view (V: first person)" : "First-person view (V: top-down)"); break;
 						case SDLK_p: if (s.net()) cmd.say("No pause in a multiplayer game"); else paused = !paused; break;
 						case SDLK_EQUALS: case SDLK_PLUS: if (s.net()) cmd.say("The game speed is fixed in a multiplayer game"); else speed = std::min(16.0, speed * 2); break;
 						case SDLK_MINUS: if (s.net()) cmd.say("The game speed is fixed in a multiplayer game"); else speed = std::max(0.125, speed / 2); break;
 						case SDLK_TAB: if (s.net()) set_commander(true); v.cycle_follow(*s.r, s.live() ? s.game->owner() : -1); if (s.live() && v.follow) s.game->select(const_cast<unit_t*>(v.follow)); break;
-						case SDLK_f: if (s.net()) set_commander(!commander); else { v.follow = nullptr; watch_slot = -1; } break;
+						case SDLK_f: if (s.fps) set_commander(!commander); else { v.follow = nullptr; watch_slot = -1; } break;
 						case SDLK_0: watch_as(0); break;
 						case SDLK_1: watch_as(1); break;
 						case SDLK_2: watch_as(2); break;
-						case SDLK_r: if (s.net()) { cmd.say("No restart in a multiplayer game"); break; } s.open(assets, a); pick = Pick{}; v.follow = nullptr; watch_slot = -1; /* the old game's units are gone: drop pointers into it */ v.spawn(*s.r); begin_game_view(); acc = 0; moving = false; firing = false; last_shots = 0; last_hp = -1; dead_seen = false; flash = 0; break;
-						case SDLK_F12: save_ppm(bwgame::format("fp_shot_%03d.ppm", shots++), fb, a.rw, a.rh); break;
+						case SDLK_r: if (s.net()) { cmd.say("No restart in a multiplayer game"); break; } s.open(assets, a); make_td(); if (s.fps && commander) { commander = false; set_topdown(false); } pick = Pick{}; v.follow = nullptr; watch_slot = -1; /* the old game's units are gone: drop pointers into it */ v.spawn(*s.r); begin_game_view(); acc = 0; moving = false; firing = false; last_shots = 0; last_hp = -1; dead_seen = false; flash = 0; break;
+						case SDLK_F12: if (topdown) save_ppm(bwgame::format("fp_shot_%03d.ppm", shots++), td_fb, td->width(), td->height()); else save_ppm(bwgame::format("fp_shot_%03d.ppm", shots++), fb, a.rw, a.rh); break;
 						case SDLK_m: if (s.models) { // cycle sprites only -> 3D buildings -> 3D buildings and units
 							static const char* names[3] = {"Models: off (sprites only)", "Models: buildings and minerals", "Models: buildings and units (experimental, not animated)"};
 							s.model_mode = (s.model_mode + 1) % 3; s.r->set_model_mode(s.model_mode); s.r->update_units(acc / sim_dt, 0); cmd.say(names[s.model_mode]);
 						} else cmd.say("No models loaded (run with --models DIR)"); break;
-						case SDLK_e: if (s.live()) { // possess the selected unit / release
+						case SDLK_e: if (s.live() && topdown) { // into the selected unit, in first person
+								unit_t* sel = s.game->selected();
+								if (sel && cmd.own(sel)) { if (s.fps && commander) td_commanding = false; set_topdown(false); v.follow = sel; cmd.say("Possessing " + cmd.name(sel)); }
+								else cmd.say(sel ? "You can only possess your own units" : "Select one of your units first"); break; }
+							if (s.live()) { // possess the selected unit / release
 							if (s.net() && !commander) { cmd.say("Press F to command your base"); break; }
 							if (s.net() && !v.follow && s.fps->player() && s.game->selected() == s.fps->player()) { set_commander(false); break; } // your hero: back into it
 							if (v.follow) { v.follow = nullptr; cmd.say("Free camera"); }
@@ -717,8 +858,14 @@ int main(int argc, char** argv) {
 			// movement: free camera flies; a possessed unit in game mode is driven with move orders
 			double run_mul = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) ? 3.0 : 1.0, sp = 110.0 * run_mul * dt;
 			double fwd = (keys[SDL_SCANCODE_W] ? sp : 0) - (keys[SDL_SCANCODE_S] ? sp : 0), str = (keys[SDL_SCANCODE_D] ? sp : 0) - (keys[SDL_SCANCODE_A] ? sp : 0);
-			if (s.fps && s.fps->direct() && !commander && !v.follow) s.fps->drive(0, 0); // no hero: no input left over for the next one
-			if (s.fps && s.fps->direct() && !commander && v.follow) { // direct mode: walking input (sent before the next step), walk and shoot at once, no orders
+			if (topdown) { // scroll: WASD, the arrows, the mouse at the window's edge (Shift: faster); scrolling lets go of a followed unit
+				double step = 1000.0 / tv.zoom * dt * run_mul, ex = 0, ey = 0;
+				ex += (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) - (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT]); ey += (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN]) - (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP]);
+				if (!a.selftest_input && SDL_GetMouseFocus() == win) { int mx, my, ww, wh; SDL_GetMouseState(&mx, &my); SDL_GetWindowSize(win, &ww, &wh); ex += (mx >= ww - 3) - (mx <= 2); ey += (my >= wh - 3) - (my <= 2); }
+				if (ex || ey) { v.follow = nullptr; tv.x += std::max(-1.0, std::min(1.0, ex)) * step; tv.y += std::max(-1.0, std::min(1.0, ey)) * step; }
+				moving = false;
+			} else if (s.fps && s.fps->direct() && !commander && !v.follow) s.fps->drive(0, 0); // no hero: no input left over for the next one
+			else if (s.fps && s.fps->direct() && !commander && v.follow) { // direct mode: walking input (sent before the next step), walk and shoot at once, no orders
 				const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180;
 				double f = fwd > 0 ? 1 : fwd < 0 ? -1 : 0, sd = str > 0 ? 1 : str < 0 ? -1 : 0;
 				s.fps->drive(std::cos(h) * f - std::sin(h) * sd, std::sin(h) * f + std::cos(h) * sd);
@@ -734,21 +881,28 @@ int main(int argc, char** argv) {
 					}
 				} else if (moving && !(s.fps && firing && fire_ready)) { s.game->stop(); moving = false; }
 			} else { if (moving) { moving = false; } if (fwd || str) { if (v.follow) v.follow = nullptr; v.move(*s.r, fwd, str); } }
-			if (s.watch && watch_slot >= 0 && s.watched) if (unit_t* h = s.watched->hero(watch_slot)) if (v.follow != h) v.follow = h; // back in a respawned hero
+			if (!topdown && s.watch && watch_slot >= 0 && s.watched) if (unit_t* h = s.watched->hero(watch_slot)) if (v.follow != h) v.follow = h; // back in a respawned hero
 			v.apply_follow(*s.r);
+			if (topdown) { if (v.follow) { tv.x = v.cam.x; tv.y = v.cam.y; } td->clamp(tv); }
 			if (s.fps && s.fps->direct() && !commander && v.follow && v.follow == s.fps->player()) { // ahead of the simulation by the input on its way, smooth between frames
 				double x, y; if (s.fps->view_position(acc / sim_dt, x, y)) { v.cam.x = x; v.cam.y = y; } }
 			// overlay: selection and hover
 			ov.selected.clear(); ov.hover = pick.unit;
 			if (s.live()) for (unit_t* u : s.game->selection()) ov.selected.push_back(u);
 			// render
-			auto t0 = Clock::now(); s.r->render(v.cam, v.follow, fb.data(), &ov);
-			pick = s.r->pick_center(v.cam, v.follow);
+			auto t0 = Clock::now();
+			if (topdown) { // what the mouse is on stands in for the crosshair's pick
+				TopOverlay tov; tov.selected = ov.selected; tov.hover = pick.unit; tov.me = s.live() ? s.game->owner() : watch_slot;
+				if (td_drag && std::hypot(mouse_x - drag_x, mouse_y - drag_y) >= 5) { tov.box = true; tov.bx0 = (int)drag_x; tov.by0 = (int)drag_y; tov.bx1 = (int)mouse_x; tov.by1 = (int)mouse_y; }
+				td->render(*s.r, tv, td_fb.data(), &tov);
+				td->minimap(*s.r, td_fb.data(), 8, td->height() - 8 - td->height() / 4, td->height() / 4);
+				pick = Pick{}; double mx, my; td->to_map(tv, mouse_x, mouse_y, mx, my);
+				if (mouse_x >= 0 && mouse_y >= 0 && mouse_x < td->width() && mouse_y < td->height()) { pick.unit = td->unit_at(mouse_x, mouse_y); pick.ground = mx >= 0 && my >= 0 && mx < s.r->map_w() && my < s.r->map_h(); pick.gx = mx; pick.gy = my; }
+			} else { s.r->render(v.cam, v.follow, fb.data(), &ov); pick = s.r->pick_center(v.cam, v.follow); }
 			render_ms = render_ms * 0.9 + 0.1 * std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-			SDL_UpdateTexture(tex, nullptr, fb.data(), a.rw * 4); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren); // black letterbox (the HUD leaves other draw colours set)
-			int ow, oh; SDL_GetRendererOutputSize(ren, &ow, &oh); // letterbox the scene, keep aspect
-			double sc = std::min((double)ow / a.rw, (double)oh / a.rh); SDL_Rect dst{(int)((ow - a.rw * sc) / 2), (int)((oh - a.rh * sc) / 2), (int)(a.rw * sc), (int)(a.rh * sc)};
-			SDL_RenderCopy(ren, tex, nullptr, &dst);
+			if (topdown) SDL_UpdateTexture(td_tex, nullptr, td_fb.data(), td->width() * 4); else SDL_UpdateTexture(tex, nullptr, fb.data(), a.rw * 4);
+			SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren); // black letterbox (the HUD leaves other draw colours set)
+			SDL_Rect dst = scene(); SDL_RenderCopy(ren, topdown ? td_tex : tex, nullptr, &dst);
 			if (s.fps && !commander) {
 				vm.update(dt, (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_D]) && s.fps->alive());
 				if (s.fps->alive()) vm.draw(ren, dst);
@@ -773,12 +927,12 @@ int main(int argc, char** argv) {
 				} else if (s.live()) {
 					Game& G = *s.game;
 					hud.text(dst.x + pad, dst.y + pad, bwgame::format("Minerals %d    Gas %d    Supply %d/%d", G.minerals(), G.gas(), G.supply_used(), G.supply_available()), yellow);
-					int y = dst.y + dst.h - pad - lh * 2;
+					int y = dst.y + dst.h - pad - lh * 2; const int lx = dst.x + pad + (topdown ? (td->height() / 4 + 16) * dst.w / td->width() : 0); // right of the minimap
 					int nsel = 0; unit_t* first = nullptr; for (unit_t* u : G.selection()) { if (!first) first = u; ++nsel; }
-					if (first) hud.text(dst.x + pad, y, nsel > 1 ? bwgame::format("%s +%d more", cmd.name(first).c_str(), nsel - 1) + "" : bwgame::format("%s   HP %d/%d", cmd.name(first).c_str(), first->hp.integer_part(), first->unit_type->hitpoints.integer_part()), white);
-					else hud.text(dst.x + pad, y, "Nothing selected", grey);
-					if (v.follow && (!s.fps || commander)) hud.text(dst.x + pad, y - sl, "Possessing: " + cmd.name(v.follow) + "  (E to release, WASD to drive)", cyan, true);
-					if (commander) hud.text(dst.x + pad, y - sl * 2, bwgame::format("Commanding your base (F: back to your hero)   You %d : %d %s", s.fps->kills, s.fps->deaths, G.opponent_name().c_str()), cyan, true);
+					if (first) hud.text(lx, y, nsel > 1 ? bwgame::format("%s +%d more", cmd.name(first).c_str(), nsel - 1) + "" : bwgame::format("%s   HP %d/%d", cmd.name(first).c_str(), first->hp.integer_part(), first->unit_type->hitpoints.integer_part()), white);
+					else hud.text(lx, y, "Nothing selected", grey);
+					if (v.follow && (!s.fps || commander)) hud.text(lx, y - sl, topdown ? "Following: " + cmd.name(v.follow) + "  (scroll or F to let go)" : "Possessing: " + cmd.name(v.follow) + "  (E to release, WASD to drive)", cyan, true);
+					if (commander) hud.text(lx, y - sl * 2, bwgame::format("Commanding your base (F: back to your hero)   You %d : %d %s", s.fps->kills, s.fps->deaths, G.opponent_name().c_str()), cyan, true);
 				} else if (s.watch) {
 					int lo = std::min(s.game->owner(), s.game->enemy()), hi = std::max(s.game->owner(), s.game->enemy());
 					hud.text(dst.x + pad, dst.y + pad, bwgame::format("Recording  %s vs %s  frame %d / %d", s.name_of(lo).c_str(), s.name_of(hi).c_str(), s.frame(), s.end_frame()), yellow);
@@ -795,13 +949,17 @@ int main(int argc, char** argv) {
 					if (!big.empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3, big, SDL_Color{255, 220, 80, 255});
 					if (!line.empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3 + lh + 4, line, white);
 				}
-				if (pick.unit) { // what the crosshair is on
+				if (pick.unit) { // what the crosshair (top-down: the mouse) is on
 					const unit_t* u = pick.unit; const char* rel = s.live() ? (u->owner == s.game->owner() ? "yours" : u->owner == s.game->enemy() ? "enemy" : "neutral") : "";
-					hud.text(dst.x + dst.w / 2, dst.y + dst.h / 2 + 16, bwgame::format("%s %s  %d/%d", cmd.name(u).c_str(), rel, u->hp.integer_part(), u->unit_type->hitpoints.integer_part()), white, true, false);
+					int tx = dst.x + dst.w / 2, ty = dst.y + dst.h / 2 + 16;
+					if (topdown) { tx = dst.x + (int)(mouse_x * dst.w / td->width()) + 18; ty = dst.y + (int)(mouse_y * dst.h / td->height()) + 18; }
+					hud.text(tx, ty, bwgame::format("%s %s  %d/%d", cmd.name(u).c_str(), rel, u->hp.integer_part(), u->unit_type->hitpoints.integer_part()), white, true, false);
 				}
 				if (cmd.msg_t > 0) hud.text(dst.x + dst.w / 2 - 150, dst.y + dst.h - pad - lh * 4 - sl, cmd.msg, cyan);
 				hud.text(dst.x + dst.w - pad, dst.y + pad, s.net() ? std::string(bwgame::format("%.0f fps  latency %d", fps, s.game->latency())) + (s.game->rtt_ms() > 0 ? bwgame::format("  ping %.0f ms", s.game->rtt_ms()).c_str() : "") : std::string(bwgame::format("%.0f fps  x%.3g%s%s", fps, speed, paused ? "  PAUSED" : "", s.done() ? "  END" : "")), grey, true, true);
-				hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, (std::string(s.net() ? (commander ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F back to your hero" : "WASD move  Mouse aim  LMB (hold) fire  RMB move here  F command your base") : s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : s.watch ? "1 / 2 a player's eyes  0 all  TAB follow  F free  P pause  =/- speed  R restart" : "TAB follow  F free  P pause  =/- speed  R restart") + (s.models ? "  M models" : "")), grey, true, true);
+				if (topdown) hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, std::string(s.live() ? "LMB select (drag: box)  RMB order  T worker  Y combat  B supply at the mouse  X stop  E into the unit" : s.watch ? "LMB follow a unit  1 / 2 a player's eyes  0 all  P pause  =/- speed" : "LMB follow a unit  TAB next  F free  P pause  =/- speed  R restart")
+					+ "  WASD/edge scroll  wheel zoom  V first person" + (s.fps ? "  F your hero" : ""), grey, true, true);
+				else hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, (std::string(s.net() ? (commander ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F back to your hero" : "WASD move  Mouse aim  LMB (hold) fire  RMB move here  F command your base") : s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause  V from above" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : s.watch ? "1 / 2 a player's eyes  0 all  TAB follow  F free  P pause  =/- speed  R restart" : "TAB follow  F free  P pause  =/- speed  R restart") + (s.models ? "  M models" : "") + (s.fps ? "" : "  V top-down")), grey, true, true);
 			}
 			SDL_RenderPresent(ren);
 			if (a.no_vsync) { // soft cap around 240 fps so the uncapped path does not burn the CPU
@@ -824,7 +982,7 @@ int main(int argc, char** argv) {
 			std::cout << (rc ? "SELFTEST-INPUT FAILED" : "SELFTEST-INPUT PASSED") << "\n";
 		}
 		if (!assets.missing_images().empty()) { std::cerr << "missing HD sprites (drawn as flat boxes): anim/main_NNN.anim for image ids:"; for (int id : assets.missing_images()) std::cerr << " " << id; std::cerr << "\n"; }
-		SDL_DestroyTexture(tex); SDL_DestroyRenderer(ren); SDL_DestroyWindow(win); SDL_Quit();
+		SDL_DestroyTexture(td_tex); SDL_DestroyTexture(tex); SDL_DestroyRenderer(ren); SDL_DestroyWindow(win); SDL_Quit();
 		return rc;
 	} catch (const std::exception& e) { std::cout << "ERROR: " << e.what() << "\n"; return 1; }
 }
