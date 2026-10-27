@@ -2,7 +2,8 @@
 # Golden views: render a fixed set of first-person frames per map and lay them out as one contact sheet per map, so a
 # milestone's rendering can be compared before and after by eye.
 #
-#   tools/golden.sh LABEL     writes out/golden/LABEL/<map>.png: one row per camera spot, columns = headings 0/90/180/270
+#   tools/golden.sh LABEL     writes out/golden/LABEL/<map>.png: one row per camera spot, columns = headings 0/90/180/270,
+#                             and out/golden/LABEL/<map>_topdown.png: the top-down view at the first spot (zoom 2)
 #
 # Spots are fp_view's deterministic --spot list (start locations, then the map centre and quarter points). The demo
 # replay gets one row, seen from its first player unit at frame 6000.
@@ -45,8 +46,13 @@ for m in "${maps[@]}"; do
 	[ "${#rows[@]}" -gt 0 ] || { echo "golden.sh: no views for $m" >&2; continue; }
 	magick "${rows[@]}" -append -resize 50% "$out/$name.png"
 	echo "$out/$name.png"
+	f="$frames/${name}_topdown.ppm"
+	if ./build/fp_view --data "$DATA_DIR" --map "$MAPS_DIR/$m" --spot 0 ${models[@]+"${models[@]}"} --out "$frames/${name}_fp_unused.ppm" --topdown "$f" >/dev/null; then
+		magick "$f" -resize 50% "$out/${name}_topdown.png" && echo "$out/${name}_topdown.png"; fi
 done
 
 if [ -f "$REPLAY" ]; then
 	row "$frames/demo_replay.png" --replay "$REPLAY" --frames 6000 && magick "$frames/demo_replay.png" -resize 50% "$out/demo_replay.png" && echo "$out/demo_replay.png"
+	./build/fp_view --data "$DATA_DIR" --replay "$REPLAY" --frames 6000 ${models[@]+"${models[@]}"} --out "$frames/demo_fp_unused.ppm" --topdown "$frames/demo_replay_topdown.ppm" >/dev/null \
+		&& magick "$frames/demo_replay_topdown.ppm" -resize 50% "$out/demo_replay_topdown.png" && echo "$out/demo_replay_topdown.png"
 fi

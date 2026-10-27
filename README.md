@@ -1,6 +1,6 @@
 # starcraft-fp — first-person view prototype over OpenBW
 
-Status: **prototype v0.4**. First-person view over OpenBW state with Remastered HD terrain and sprites; playable FPS wave mode, RTS sandbox and replay viewer.
+Status: **prototype v0.4**. First-person view over OpenBW state with Remastered HD terrain and sprites; playable FPS wave mode, RTS sandbox, 1v1 and replay viewer; the classic top-down view (V) in every mode.
 
 ## What it is / is not
 - Rules and simulation come from OpenBW (a reimplementation of classic Brood War). They are *assumed* to match
@@ -16,6 +16,7 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
     ./run.sh --game MAP               # live RTS-style sandbox: possess a unit, give orders
     ./run.sh --host / --join HOST     # 1v1 over the network: a hero and a base each (see Multiplayer below)
     ./run.sh --replay FILE            # another replay;  --map FILE loads a map with neutral units only
+    ./run.sh --topdown                # start in the top-down view (V switches between it and first person, in every mode)
 
 `run.sh` builds `fp_play` when needed and passes `--data`. A `--game`/`--map` value that is not a file is looked up in your StarCraft
 maps folder (`MAPS_DIR`), so `./run.sh --game "(2)The Small Divide"` works. `--fps` without `--game` plays `GAME_MAP`, and every `--fps`
@@ -23,7 +24,8 @@ run gets `--weapons "$WEAPONS_DIR"` when that directory exists (without it there
 
 ### FPS (`--game MAP --fps`)
 You are Jim Raynor's Marine (`--race protoss`: Fenix's Dragoon, `--race zerg`: Hunter-Killer). Waves of the enemy race (`--enemy`,
-default protoss) hunt you. The camera is locked to the hero, so F and TAB do nothing here.
+default protoss) hunt you. The camera is locked to the hero; V or F step out of it to watch from above (the hero fights on its own
+meanwhile; you can order it around there), F goes back into it.
 - **Movement, order-driven (default)**: WASD issues short StarCraft move orders in the direction you face (pathing and collision are
   OpenBW's); RMB is a smart order at the crosshair (move to the floor point, or attack the unit). Shots are attack orders, so the hero
   stands still while firing at a target in range: a StarCraft unit cannot move and shoot at once.
@@ -60,9 +62,10 @@ picks the latency from it (localhost and LAN: 2 frames, 83 ms; a 100 ms round tr
   still on its way, which is exactly where your hero ends up (only terrain stops a hero), and draws in between frames.
 - **Smooth motion**: the simulation moves units 24 times a second; every unit (the other player's hero, your base, the follow
   camera in the order-driven hero view) is drawn on its way between the last two simulation frames, at most a frame (42 ms) behind.
-- **Commanding the base**: F steps out of the hero into a free camera with the game sandbox controls (LMB select, RMB order,
-  E possess, T worker, Y combat unit, B supply, X stop, TAB next unit); meanwhile the hero fights like any StarCraft unit. F, or E
-  with the hero selected, goes back into it.
+- **Commanding the base**: F steps out of the hero to command the base from above (the top-down view: LMB select or drag a box,
+  RMB order, T worker, Y combat unit, B supply at the mouse, X stop, E into the selected unit, the minimap); V switches that to the
+  first-person free camera with the game sandbox controls (LMB select, RMB order, E possess, ...). Meanwhile the hero fights like any
+  StarCraft unit. F, or E with the hero selected in first person, goes back into it.
 - Victory and defeat follow StarCraft's melee rules (a player who loses every building is defeated). Q leaves the game (the other
   player wins and their game goes on). Pause, sim speed and restart are off.
 - Fog of war, as StarCraft draws it for you: the other player's units are drawn, and can be targeted, only where your units see
@@ -115,8 +118,26 @@ outside the command stream (it spawns enemies), so a recording of it does not pl
   LMB select (Shift adds), RMB smart order (move/attack/gather/rally), E possess/release the selected unit (WASD then drives it with
   move orders), T train worker, Y train combat unit, B build supply at the crosshair (Terran/Protoss workers only), X stop.
 
+### Top-down view (V, or `--topdown` to start there)
+The classic StarCraft camera over the same game, in every mode: replays, recordings, the sandbox, and with a hero (F or V step out
+of it to command from above; it fights on its own meanwhile). Drawn from the Remastered HD art the first-person view uses, as
+StarCraft draws it: the map's terrain tiles, creep with its edges, and every image of every sprite (units with their shadows,
+turrets and overlays, bullets, explosions, remnants) in StarCraft's order (by elevation, then north to south). It shows exactly what
+the first-person view shows: units drawn between simulation frames, and in a two-player game or a player's view of a recording that
+player's fog of war (the ground dimmed, the other player's units only where yours see them, buildings remembered, cloaked units as a
+shimmer). 1280x800 by default (twice `--res`: the HD art has 4 texels per map pixel); about 2.5 ms a frame on 12 cores.
+- **Camera**: WASD, the arrow keys or the mouse at the window's edge scroll (Shift: faster); the wheel zooms (1, 1.5, 2, 3 or 4
+  screen pixels per map pixel; StarCraft draws 1); MMB drags the map; the minimap (bottom left: terrain, units, the view) moves it
+  on a click or drag. TAB follows the next unit; scrolling or F lets go.
+- **Commands** (sandbox, commanding your base): LMB selects the unit under the mouse (Shift adds), a dragged box selects your units
+  in it (units before buildings, 12 at most); RMB orders the selection to the unit or ground under the mouse (also on the minimap);
+  T, Y, X as in first person; B builds a supply structure at the mouse; E goes into the selected unit in first person.
+- **Replays and recordings**: a click on a unit follows it.
+- V switches back to first person (with a hero: commanding from the first-person free camera; F goes back into the hero).
+- Creep edges need `TileSet/<tileset>.dds.grp` in the data directory (see External assets); without it creep has straight edges.
+
 ### Common controls and options
-- Mouse look (about 64 degrees up and down, enough to aim down a cliff or up at its edge); WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; M cycle 3D models; P pause; `=`/`-` sim speed
+- Mouse look (about 64 degrees up and down, enough to aim down a cliff or up at its edge); WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; V top-down view; M cycle 3D models; P pause; `=`/`-` sim speed
   (x0.125..x16); R restart; ESC release/capture the mouse; F12 screenshot (`fp_shot_NNN.ppm` in the working directory); Q quit.
 - `--race R` / `--enemy R` (terran, protoss, zerg; default terran vs protoss), `--res WxH` render resolution (default 640x400),
   `--window WxH` (default 1280x800), `--fullscreen`, `--sim-speed X` starting sim speed (0.125..16), `--no-capture` leaves your
@@ -125,6 +146,8 @@ outside the command stream (it spawns enemies), so a recording of it does not pl
 
 ## External assets and licences (nothing below is in this repo)
 - **StarCraft data**: extracted by you from your own install (`tools/casc_get.cjs`; `bw-casclib` has a buffer-size bug, see the script header).
+  The top-down view's creep edges are 8 more files (2 MB): `node tools/casc_get.cjs "<StarCraft install>" "$DATA_DIR" '^TileSet\\[A-Za-z]+\.dds\.grp$'`
+  (with `bw-casclib` reachable through `NODE_PATH`).
 - **Gun art and sounds** (`--weapons`): a local copy of the GZDoom mod "Boltgun Doom" (credits: Ultra.Boi; based on *Warhammer 40,000: Boltgun* by
   Auroch Digital). No licence file ships with it and it is third-party/Games Workshop IP: keep it local, do not commit or redistribute it. The code
   reads `Patches/BLTR{G,F}*.png` and `Sounds/Weapons/Boltgun`, `Sounds/Player/{Pain,Death}` from that directory only.
@@ -136,7 +159,11 @@ outside the command stream (it spawns enemies), so a recording of it does not pl
 model against OpenBW's walkability and ground heights; `TERRAIN_MAPS=...` adds maps), `fp_gametest` (RTS orders, determinism),
 `fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death, units drawn between frames), `fp_fogtest` (the fog of war drawn
 for one player: terrain brightness and its fade, a building remembered and forgotten, cloaked and burrowed units, detection,
-the cost per frame; a third argument writes its frames as PPMs), `fp_nettest` (two games in two threads over localhost TCP: the same
+the cost per frame; a third argument writes its frames as PPMs), `fp_topdowntest` (the top-down view on a Zerg start: the ground is the map's HD tile art texel for texel, creep is drawn with the
+tileset's creep tiles and its edges, every pixel written, StarCraft's drawing order (south over north, air over ground) and picking by
+the art, a selection box, circles and health bars, the fog of war, a remembered Nexus that cannot be picked, an undetected Dark
+Templar as a shimmer, the same pixels on 1 and 7 threads, the cost of a 1280x800 frame; a third argument writes its frames),
+`fp_nettest` (two games in two threads over localhost TCP: the same
 state on every frame of a 2400-frame game with commands, a hero fight and respawns; commands landing on the same frame in both after the
 latency; a deliberate state change found on the next frame; a player leaving; free movement with shooting, and the camera's
 prediction matching the simulation on every frame; over a relay holding everything 50 ms each way, the latency picked from the
@@ -148,9 +175,12 @@ Window tests (they open a window briefly): `fp_play ... --selftest-input` for re
 `--game MAP --host PORT --selftest-input` and `--game MAP --join 127.0.0.1:PORT --selftest-input` together; both must pass
 (add `--fps-move-shoot` to both for free movement: W walks the hero, the camera stays on it, releasing W stops it). Each writes its
 recording into `replays/`; `--watch FILE --selftest-input` plays one: the views switch, it plays to its end, every frame as recorded.
+Each self-test also goes into the top-down view: in a replay V, scrolling, the wheel, a click following a unit and the minimap; in
+the sandbox a click selecting the Command Center, a box selecting SCVs and RMB sending them; with a hero V (or F in multiplayer) to
+command from above (multiplayer: the other base in the fog shows nothing there either) and back; a recording seen from above.
 Golden views: `tools/golden.sh LABEL` renders fixed first-person views (`fp_view --spot K`: start locations, map centre,
 quarter points; four headings) of one stock map per tileset plus the demo replay into `out/golden/LABEL/*.png` contact sheets,
-to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset; `fp_view --heightmap F.ppm` the terrain model
+and a top-down view of each (`*_topdown.png`), to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset; `fp_view --heightmap F.ppm` the terrain model
 (green floor by height, yellow ramps, red cliffs, grey obstacles, blue water, black void). `build/terrain_survey DATA_DIR [--typemap DIR] MAP...`
 prints what a map's terrain data says (levels, unwalkable regions, cv5 types, cliff band depths).
 
@@ -170,7 +200,7 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
 
 ## Build / run (still frames)
     make                                  # needs OpenBW headers: OPENBW_DIR=../starcraft-data/openbw
-    ./build/fp_view --data DATA_DIR --replay demo.rep --frames 6000 --heading 0 --out out/fp.ppm --topdown out/td.ppm
+    ./build/fp_view --data DATA_DIR --replay demo.rep --frames 6000 --heading 0 --out out/fp.ppm --topdown out/td.ppm [--zoom Z] [--viewer P]
     python3 tools/ppm2png.py out/fp.ppm out/fp.png
 
 ## Rendering model (prototype choices, not StarCraft facts)
@@ -211,6 +241,15 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   129 of the 131 such images, the Command Center (main_063) and the Dark Templar (main_129) among them; the two left are a Jungle
   doodad (651) and the Medic's healing effect (968).
   HD pixels are 4x SD pixels (assumed from the tile ratio; billboard sizes look right but this is not verified).
+- `TileSet/<name>.dds.grp` (creep edges, the top-down view): u32 file size, u16 frame count (37), u16 0x1004, frames from offset 8 as
+  `[u32 0, u16 w, u16 h, u32 size, DDS]`, DXT1 with punch-through alpha; identical on all 8 tilesets. They are the SD creep GRP's
+  (`TileSet/<name>.grp`) frames at 4x: a frame lies at 4x the SD frame's offset in the 128-texel tile, moved in so it ends at the
+  tile's edge where it would stick out (bottom and right edges: then exactly where the SD frame is). Which frame a tile shows comes
+  from which of its 8 neighbours have creep (37 patterns and none).
+- Placing HD frames (the top-down view): an image's frame lies in its anim's box as an SD frame lies in its GRP, the box centred on
+  the image (sprite position + image offset) and the frame record's `xoff, yoff` / 4 from the box's corner (mirrored for flipped
+  frames). Drawn at 1/4 against the 4x terrain tiles, units and buildings stand and size as in StarCraft (by eye; not compared
+  against the original pixel for pixel).
 - Frame choice for directional images follows OpenBW `set_image_heading`: `off=(dir+4)/8`, mirrored+flipped above 16;
   here `dir` is the unit heading relative to the camera bearing (derived, not yet validated against a known view).
 
@@ -227,5 +266,9 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   then a plain ground plane (scenery only: nothing can go there).
 - Walkability and height levels are read once per map load; creep-induced changes during play are not tracked.
 - Minor black fringe on some sprite edges (opaque-alpha dark texels; not investigated).
-- Only the main image of each sprite is drawn (no shadows/overlays).
+- First person: only the main image of each sprite is drawn (no shadows/overlays); the top-down view draws them all.
+- Top-down: diffuse art only (no emissive/bright layers, no water animation); a Protoss building warping in is drawn tinted and
+  see-through rather than with StarCraft's warp texture; hallucinations are not tinted; the creep tile on each tile is picked by
+  us (StarCraft picks at random). Control groups, double-click to select a type, hotkeys and the command card are not there (the
+  same few keys as in first person).
 - Models are drawn in their rest pose (no animation yet); additive glows, decals and normal maps are skipped.

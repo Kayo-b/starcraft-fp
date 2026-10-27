@@ -12,6 +12,7 @@
 #   ./run.sh --join HOST[:PORT]       ... and join it from the other computer (same map file, same options)
 #                                     (both record the game into replays/; --no-record skips it)
 #   ./run.sh --watch replays/F.fpr    watch a recorded game again (1 / 2: through a player's eyes, 0: all of it)
+#   ./run.sh --topdown                start in the top-down view (V switches between it and first person in every mode)
 #   ./run.sh --no-capture             leave the mouse pointer alone
 #
 # Every other argument is passed to fp_play (e.g. --race R, --enemy R, --fire-rate N, --range N, --speed N, --no-vsync; see README).

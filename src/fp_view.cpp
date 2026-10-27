@@ -1,5 +1,7 @@
-// fp_view: render ONE first-person frame (PPM) from OpenBW simulation state. Read-only.
+// fp_view: render ONE first-person frame (PPM) from OpenBW simulation state, and optionally the top-down view. Read-only.
 #include "fp_render.h"
+#include "fp_topdown.h"
+#include <chrono>
 #include <cstdio>
 #include <iostream>
 #include <memory>
@@ -9,7 +11,7 @@ using namespace fp;
 
 struct Args {
 	std::string data, input, out = "out/fp.ppm", topdown, heightmap, models, model; double model_x = -1, model_y = -1, model_yaw = 0, model_scale = 32; int model_owner = 1; bool model_units = false;
-	int frames = 0, unit = -1, spot = -1, w = 640, h = 400; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false, print_tileset = false; RenderParams rp;
+	int frames = 0, unit = -1, spot = -1, w = 640, h = 400, viewer = -1; double zoom = 2; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false, print_tileset = false; RenderParams rp;
 };
 static void die(const char* m) { std::cerr << m << "\n"; std::exit(2); }
 
@@ -28,6 +30,8 @@ int main(int argc, char** argv) {
 		else if (k == "--pitch") a.pitch = atof(next());
 		else if (k == "--out") a.out = next();
 		else if (k == "--topdown") a.topdown = next();
+		else if (k == "--zoom") a.zoom = atof(next());
+		else if (k == "--viewer") a.viewer = atoi(next());
 		else if (k == "--size") sscanf(next(), "%dx%d", &a.w, &a.h);
 		else if (k == "--print-tileset") a.print_tileset = true;
 		else if (k == "--spot") a.spot = atoi(next());
@@ -43,7 +47,7 @@ int main(int argc, char** argv) {
 		else if (k == "--view-dist") a.rp.view_dist = atof(next());
 		else die("unknown option");
 	}
-	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm] [--heightmap F.ppm] [--print-tileset] [--eye PX] [--level-h PX] [--view-dist PX] [--models DIR [--model FILE --model-at X,Y[,YAW] [--model-scale PX] [--model-owner P]] [--model-units]]");
+	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm [--zoom Z]] [--viewer P] [--heightmap F.ppm] [--print-tileset] [--eye PX] [--level-h PX] [--view-dist PX] [--models DIR [--model FILE --model-at X,Y[,YAW] [--model-scale PX] [--model-owner P]] [--model-units]]");
 	try {
 		replay_player player;
 		player.init(dir_loader(a.data));
@@ -64,6 +68,7 @@ int main(int argc, char** argv) {
 				r.add_static_model(m, a.model_x, a.model_y, a.model_scale, a.model_yaw, a.model_owner);
 				std::cout << "model " << a.model << ": " << m->triangles() << " triangles, " << m->tex.size() << " textures\n"; }
 		}
+		if (a.viewer >= 0) r.set_viewer(a.viewer);
 		r.update_units();
 		std::cout << "map " << r.map_w() << "x" << r.map_h() << " px, units " << r.units().size() << "\n";
 		Camera cam; cam.heading = a.heading; cam.pitch = a.pitch; const unit_t* hide = nullptr;
@@ -119,16 +124,15 @@ int main(int argc, char** argv) {
 			write(a.heightmap, hm, t.w, t.h);
 			std::cout << "wrote " << a.heightmap << "\n";
 		}
-		if (!a.topdown.empty()) { // debug: 4 px per minitile, 128x128 minitile window around the camera, with the view cone
-			const int R = 64, S = 4, N = 2 * R * S; std::vector<uint32_t> td((size_t)N * N);
-			int cx0 = (int)(cam.x / 8) - R, cy0 = (int)(cam.y / 8) - R;
-			for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) { uint8_t t[3]; r.tile_sample((cx0 + x / (double)S) * 8, (cy0 + y / (double)S) * 8, t); td[(size_t)y * N + x] = 0xFF000000u | (t[0] << 16) | (t[1] << 8) | t[2]; }
-			for (auto& u : r.units()) { int px = (int)((u.x / 8 - cx0) * S), py = (int)((u.y / 8 - cy0) * S);
-				for (int dy = -2; dy <= 2; ++dy) for (int dx = -2; dx <= 2; ++dx) { int X = px + dx, Y = py + dy; if (X >= 0 && Y >= 0 && X < N && Y < N) td[(size_t)Y * N + X] = 0xFFC040C0; } }
-			const double PI = 3.14159265358979323846, hd = cam.heading * PI / 180, fov = r.params().fov * PI / 180;
-			double dx = std::cos(hd), dy = std::sin(hd), px = -dy * std::tan(fov / 2), py = dx * std::tan(fov / 2);
-			for (double t = 0; t < 400; t += 1) for (int e = -1; e <= 1; ++e) { int X = (int)(((cam.x + (dx + px * e) * t) / 8 - cx0) * S), Y = (int)(((cam.y + (dy + py * e) * t) / 8 - cy0) * S); if (X >= 0 && Y >= 0 && X < N && Y < N) td[(size_t)Y * N + X] = 0xFFFFFFFF; }
-			write(a.topdown, td, N, N);
+		if (!a.topdown.empty()) { // the top-down view centred on the camera, twice the first-person frame's size
+			TopDown td(player.st(), player.funcs(), assets, 2 * a.w, 2 * a.h); TopView tv{cam.x, cam.y, a.zoom}; td.clamp(tv);
+			std::vector<uint32_t> px((size_t)td.width() * td.height());
+			auto t0 = std::chrono::steady_clock::now(); td.render(r, tv, px.data());
+			double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+			auto t1 = std::chrono::steady_clock::now(); td.render(r, tv, px.data());
+			double ms2 = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+			write(a.topdown, px, td.width(), td.height());
+			std::cout << "wrote " << a.topdown << " (" << td.drawn() << " images, " << ms << " ms with decoding, " << ms2 << " ms again" << (td.creep_edges() ? "" : "; no creep edges: TileSet/*.dds.grp missing") << ")\n";
 		}
 	} catch (const std::exception& e) { std::cout << "ERROR: " << e.what() << "\n"; return 1; }
 }
