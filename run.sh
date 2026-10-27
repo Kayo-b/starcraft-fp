@@ -8,6 +8,10 @@
 #   ./run.sh --fps --fps-move-shoot   FPS wave mode with free FPS-style movement (walk and shoot at once; experimental)
 #   ./run.sh --game MAP               live RTS-style sandbox on a map (add --fps for the wave mode there)
 #   ./run.sh --game "(2)The Small Divide"   a map name alone is looked up in MAPS_DIR (.scm/.scx optional)
+#   ./run.sh --host [PORT]            1v1 over the network on GAME_MAP (or --game MAP): wait for the other player
+#   ./run.sh --join HOST[:PORT]       ... and join it from the other computer (same map file, same options)
+#                                     (both record the game into replays/; --no-record skips it)
+#   ./run.sh --watch replays/F.fpr    watch a recorded game again (1 / 2: through a player's eyes, 0: all of it)
 #   ./run.sh --no-capture             leave the mouse pointer alone
 #
 # Every other argument is passed to fp_play (e.g. --race R, --enemy R, --fire-rate N, --range N, --speed N, --no-vsync; see README).
@@ -17,6 +21,7 @@
 # MODELS_DIR: SC Evo Complete's SCEvo_Assets.SC2Mod/Base.SC2Assets (3D buildings and minerals; local SC2 mod assets, never
 # committed), added when it exists unless NO_MODELS=1. RUN_SH_DRY=1 prints the fp_play command instead of running it.
 set -euo pipefail
+start_dir="$PWD"
 cd "$(dirname "$(readlink -f "$0")")"
 
 DATA_DIR="${DATA_DIR:-../starcraft-data/casc-scratch/extracted}"
@@ -45,13 +50,14 @@ resolve_map() {
 args=(); prev=""
 for a in "$@"; do
 	if [ "$prev" = "--game" ] || [ "$prev" = "--map" ]; then a="$(resolve_map "$a")"; fi
+	if [ "$prev" = "--watch" ] && [ ! -f "$a" ] && [ -f "$start_dir/$a" ]; then a="$start_dir/$a"; fi # relative to where run.sh was started
 	args+=("$a"); prev="$a"
 done
 set -- ${args[@]+"${args[@]}"}
 
-# --fps: FPS wave mode, on GAME_MAP unless a map was given; the gun art/sounds come from WEAPONS_DIR when it exists.
+# --fps (and the 1v1 --host/--join): on GAME_MAP unless a map was given; the gun art/sounds come from WEAPONS_DIR when it exists.
 has_input=0; fps=0; has_weapons=0
-for a in "$@"; do case "$a" in --replay|--map|--game) has_input=1 ;; --fps) fps=1 ;; --weapons) has_weapons=1 ;; esac; done
+for a in "$@"; do case "$a" in --replay|--map|--game|--watch) has_input=1 ;; --fps|--host|--join) fps=1 ;; --weapons) has_weapons=1 ;; esac; done
 if [ "$fps" = 1 ] && [ "$has_input" = 0 ]; then
 	[ -f "$GAME_MAP" ] || { echo "run.sh: map not found: $GAME_MAP (set GAME_MAP)" >&2; exit 1; }
 	set -- --game "$GAME_MAP" "$@"; has_input=1

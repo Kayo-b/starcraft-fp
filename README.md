@@ -14,6 +14,7 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
     ./run.sh --fps                    # FPS wave mode on GAME_MAP, order-driven movement (the default)
     ./run.sh --fps --fps-move-shoot   # FPS wave mode with free FPS-style movement: walk and shoot at the same time
     ./run.sh --game MAP               # live RTS-style sandbox: possess a unit, give orders
+    ./run.sh --host / --join HOST     # 1v1 over the network: a hero and a base each (see Multiplayer below)
     ./run.sh --replay FILE            # another replay;  --map FILE loads a map with neutral units only
 
 `run.sh` builds `fp_play` when needed and passes `--data`. A `--game`/`--map` value that is not a file is looked up in your StarCraft
@@ -29,6 +30,8 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
 - **Movement, free (`--fps-move-shoot`, experimental)**: WASD drives the hero directly with velocity physics (acceleration, friction,
   wall slide) in any direction, with no orders, so you can walk and shoot at the same time. RMB sets an auto-walk goal at the crosshair
   floor point (any WASD input cancels it). Damage goes straight through OpenBW's weapon-hit resolution. Top speed is fixed at 192 px/s.
+  The physics runs once per simulation frame in integers (1/256 px) and the input goes in as commands, so it also works in a
+  multiplayer game; the camera is drawn between frames, ahead of the simulation by the input on its way (see Multiplayer).
 - **Shooting**: mouse aims, hold LMB to fire at the enemy under the crosshair (small aim assist; no shooting through walls). The hero
   only fires while the trigger is held (StarCraft units normally auto-attack). Crosshair: green = enemy in weapon range, red = enemy
   out of range; firing out of range still shoots and always misses (with a bullet-impact sound from the mod).
@@ -39,6 +42,72 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
   after "YOU DIED").
 - **Tuning** (percent of the StarCraft data, 10..1000): `--fire-rate N` and `--range N` (default 200 each), `--speed N` (movement
   speed, default 90; order-driven mode only).
+
+### Multiplayer 1v1 (`--game MAP --host [PORT]` / `--game MAP --join HOST[:PORT]`)
+Two players over TCP, each on their own computer (or two windows on one). StarCraft melee start: each player gets a town hall,
+4 workers and 50 minerals, plus their race's FPS hero next to it (Raynor's Marine, Fenix's Dragoon, the Hunter-Killer). Both
+games run the whole simulation in lockstep (OpenBW's `sync.h`, `src/fp_net.h`); only commands travel, and a command takes effect
+in both games on the same frame, a few frames (the latency) after it was given. The host measures the round trip in the lobby and
+picks the latency from it (localhost and LAN: 2 frames, 83 ms; a 100 ms round trip: 3; 200 ms: 4), and the joiner takes it.
+
+    ./run.sh --host                   # wait for the other player on port 6112 (GAME_MAP, or --game MAP; --race R)
+    ./run.sh --join 192.168.1.20      # on the other computer: the same map file, --fire-rate/--range/--speed/--fps-move-shoot
+
+- **Hero view** (the start): the FPS controls (WASD order-driven movement, hold LMB to fire, RMB move/attack at the crosshair).
+  A dead hero comes back at its start location after 10 s. The top line counts hero kills : deaths.
+- **Free movement** (`--fps-move-shoot`, both players): walk and shoot at once. Walking input and shots are commands like any other,
+  so they land a latency later; your own camera does not wait for that: it runs the same movement code ahead over the input
+  still on its way, which is exactly where your hero ends up (only terrain stops a hero), and draws in between frames.
+- **Smooth motion**: the simulation moves units 24 times a second; every unit (the other player's hero, your base, the follow
+  camera in the order-driven hero view) is drawn on its way between the last two simulation frames, at most a frame (42 ms) behind.
+- **Commanding the base**: F steps out of the hero into a free camera with the game sandbox controls (LMB select, RMB order,
+  E possess, T worker, Y combat unit, B supply, X stop, TAB next unit); meanwhile the hero fights like any StarCraft unit. F, or E
+  with the hero selected, goes back into it.
+- Victory and defeat follow StarCraft's melee rules (a player who loses every building is defeated). Q leaves the game (the other
+  player wins and their game goes on). Pause, sim speed and restart are off.
+- Fog of war, as StarCraft draws it for you: the other player's units are drawn, and can be targeted, only where your units see
+  them (neutral units always). The terrain, and what stands on it, is drawn at full brightness where you see, dimmed where you have
+  seen before, darker where you never have; OpenBW refreshes vision every ~4 s, and the change fades in a quarter second. An enemy
+  building you have seen stays drawn, dimmed, where you saw it (not a target) until that spot is in sight again, even if it was
+  destroyed meanwhile. Cloaked units: an enemy's, undetected, is a shimmer you cannot target (burrowed ones are not drawn at all);
+  detected (a Missile Turret, Photon Cannon or Spore Colony near it, or an Observer, Science Vessel or Overlord), and your own, are
+  drawn see-through. Free-movement shots at an undetected unit do nothing.
+- Options: `--race R`, `--name NAME` (default `$USER`), `--latency N|auto` on the host (1..8 frames; default auto, from the round
+  trip; a joiner's is ignored). The host waits for a player as long as it takes; a joiner retries for a minute.
+- HUD, top right: the latency and the ping, the round trip during the game. The ping includes the wait until each game next reads the
+  network (once per rendered frame), so it is higher than the network's own, ~30-70 ms with two windows on one computer: that wait
+  is part of what the latency has to cover. The latency is picked for windows rendering at 60 Hz or more.
+- Checked at the start: the program version, the map file (CRC), the latency, the FPS tuning and the movement mode must match. Every frame each game sends
+  a hash of its state and the other compares it with its own: a difference stops the game with "out of sync at frame N" (none
+  seen in the tests). "Waiting for NAME..." shows when the game has stood still for 0.3 s, or spent 40% of the last second
+  waiting for the other one (a game that keeps stopping), and stays for a second after (it does not blink); "NAME left the game" or
+  "Lost the connection to NAME" when the other game is gone.
+- Not yet: more than two players (`sync.h` takes one peer), our own relay or NAT traversal (see "Over the internet"), rejoining a
+  game after a dropped connection (a short Wi-Fi hiccup is fine: TCP resends, and OpenBW waits 60 s for the other game). Nothing in
+  the game's controls makes cloaked or burrowed units yet (no tech or spell commands).
+
+#### Over the internet
+The joiner must reach the host's TCP port (6112, or `--host PORT`). Two ways, neither needs anything from this program (not tried
+over the internet yet):
+- **A virtual private network** (easiest): both install [Tailscale](https://tailscale.com) (or ZeroTier) and join the same network
+  (Tailscale: the same account, or the host shares their machine with the joiner). The host runs `./run.sh --host`; the joiner
+  `./run.sh --join 100.x.y.z`, the host's network address (`tailscale ip -4` on the host). Traffic goes straight between the two
+  computers when the routers allow it, through the service's relays otherwise; either way the host's lobby measures the round
+  trip and picks the latency (the status line says which).
+- **Port forwarding**: the host's router forwards TCP 6112 to the host's computer; the joiner uses the host's public address. It
+  does not work behind carrier-grade NAT (some mobile and fibre providers), and it shows the joiner the host's address.
+Either way the host's firewall must let TCP 6112 in, both players need the same map file and the same version of this program
+(both checked at the start).
+
+#### Recordings
+Every two-player game is recorded into `replays/<date>_<time>_<you>-vs-<them>.fpr` (`--record FILE` names it, `--no-record` skips
+it; `--record FILE` also records a single-player game). Watch one with `./run.sh --watch replays/FILE.fpr`: 1 / 2 see the game
+through a player's eyes (following their hero, with their fog of war), 0 all of it with a free camera; TAB, F, P, `=`/`-` and R as
+in a replay. A recording holds the setup the lobby left (map, slots, random seed, FPS settings), every command of both players on
+the frame it took effect, and the state hash after every frame: playback runs the same game and stops with a message where its
+state differs (none seen in the tests). About 13 bytes a frame (~400 KB for 20 minutes). It needs the map file it was made on
+(checked; `--game MAP` if it has moved) and the same version of this program. The single-player `--selftest-input` changes its game
+outside the command stream (it spawns enemies), so a recording of it does not play back.
 
 ### Replay and game sandbox
 - **Replay** (`--replay FILE [--start-frame N]`): watch from inside the world; no orders.
@@ -65,9 +134,20 @@ default protoss) hunt you. The camera is locked to the hero, so F and TAB do not
 ## Tests
 `make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=.../W40K_Boltgun_Doom_a0.9.1` runs the headless suites: `fp_terraintest` (the terrain
 model against OpenBW's walkability and ground heights; `TERRAIN_MAPS=...` adds maps), `fp_gametest` (RTS orders, determinism),
-`fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
+`fp_fpstest` (arena, waves, enemy AI, fire/trigger/range, death, units drawn between frames), `fp_fogtest` (the fog of war drawn
+for one player: terrain brightness and its fade, a building remembered and forgotten, cloaked and burrowed units, detection,
+the cost per frame; a third argument writes its frames as PPMs), `fp_nettest` (two games in two threads over localhost TCP: the same
+state on every frame of a 2400-frame game with commands, a hero fight and respawns; commands landing on the same frame in both after the
+latency; a deliberate state change found on the next frame; a player leaving; free movement with shooting, and the camera's
+prediction matching the simulation on every frame; over a relay holding everything 50 ms each way, the latency picked from the
+round trip and both games, paced as the window paces them, keeping up with the clock, and falling behind with a latency too short;
+the latency table and the waiting indicator's timing; every game recorded and played back, the full game, the one a player leaves and
+free movement, plus a single-player FPS game, each frame's state as recorded; built with AddressSanitizer), `fp_assettest` (PNG/OGG decode vs independent values, mixer).
 Window tests (they open a window briefly): `fp_play ... --selftest-input` for replay, `--game MAP` and `--game MAP --fps --weapons MOD_DIR`
-(use `SDL_AUDIODRIVER=dummy` to stay silent); `--autotest` checks collision against OpenBW `is_walkable`.
+(use `SDL_AUDIODRIVER=dummy` to stay silent); `--autotest` checks collision against OpenBW `is_walkable`. Multiplayer: start
+`--game MAP --host PORT --selftest-input` and `--game MAP --join 127.0.0.1:PORT --selftest-input` together; both must pass
+(add `--fps-move-shoot` to both for free movement: W walks the hero, the camera stays on it, releasing W stops it). Each writes its
+recording into `replays/`; `--watch FILE --selftest-input` plays one: the views switch, it plays to its end, every frame as recorded.
 Golden views: `tools/golden.sh LABEL` renders fixed first-person views (`fp_view --spot K`: start locations, map centre,
 quarter points; four headings) of one stock map per tileset plus the demo replay into `out/golden/LABEL/*.png` contact sheets,
 to compare rendering before and after a change. `fp_view --print-tileset` prints a map's tileset; `fp_view --heightmap F.ppm` the terrain model
@@ -126,7 +206,10 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   frames from offset 8 as `[u16,u16,u16 w,u16 h,u32 size,DDS]`; every frame is a 128x128 DXT1 DDS (size 8,320). Tile
   index = OpenBW `tiles_mega_tile_index`. Checked: parsing consumes the file exactly; a top-down render is seamless.
 - `anim/main_NNN.anim` (NNN = OpenBW main image id): `ANIM`, version 0x204, 7 layers (diffuse DXT5, bright, teamcolor DXT1,
-  emissive, normal, specular, ao_depth), one sprite record @0x14c, 16-byte frame records `x,y,xoff,yoff,w,h`.
+  emissive, normal, specular, ao_depth), one sprite record @0x14c, 16-byte frame records `x,y,xoff,yoff,w,h`. An image with no
+  file of its own shares the one of the first image with the same GRP (`arr/images.dat`, `arr/images.tbl`, names ignoring case):
+  129 of the 131 such images, the Command Center (main_063) and the Dark Templar (main_129) among them; the two left are a Jungle
+  doodad (651) and the Medic's healing effect (968).
   HD pixels are 4x SD pixels (assumed from the tile ratio; billboard sizes look right but this is not verified).
 - Frame choice for directional images follows OpenBW `set_image_heading`: `off=(dir+4)/8`, mirrored+flipped above 16;
   here `dir` is the unit heading relative to the camera bearing (derived, not yet validated against a known view).

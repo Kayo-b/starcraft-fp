@@ -5,7 +5,18 @@
 //   --game MAP           live melee sandbox on a stock map: you are one player, a second base sits idle
 //                        (OpenBW has no AI, so the enemy only acts if you control it)
 //   --game MAP --fps     FPS wave mode: you are a hero unit, waves of the enemy race hunt you (fp_fps.h)
+//   --game MAP --host [PORT] / --game MAP --join HOST[:PORT]
+//                        1v1 over the network (fp_net.h): each player has a base and a hero; play the hero in first
+//                        person or step out (F) to command the base. Both players load the same map file. Port 6112.
 //   --map FILE           load a map with neutral units only
+//   --watch FILE.fpr     watch a recorded game again (--game MAP if the map file has moved since); 1 / 2 see it through a
+//                        player's eyes (their hero, their fog of war), 0 all of it; the replay controls otherwise
+//
+// Multiplayer options: --latency N|auto (host: frames between a command and its effect, 1..8; default auto, picked from
+//   the round trip measured in the lobby; the joiner takes the host's), --name NAME. Pause, sim speed and restart are off;
+//   --fire-rate/--range/--speed/--fps-move-shoot must match the other player's. With --fps-move-shoot the camera shows
+//   your hero where your input is taking it (no wait for the latency). The game is recorded into replays/ (see --watch);
+//   --record FILE names the file, --no-record skips it. --record FILE also records a single-player game.
 //
 // FPS options: --weapons MOD_DIR (gun art/sounds), --fps-move-shoot (free movement: walk and shoot at once),
 //   --fire-rate N / --range N / --speed N (percent of the StarCraft data, 10..1000)
@@ -20,14 +31,20 @@
 //   [LMB select unit under crosshair (Shift adds), RMB order (move/attack/gather/rally), E possess/release the selected unit,
 //    WASD then moves the possessed unit, T train worker, Y train combat unit, B build supply, X stop]
 //   {LMB (hold) fire, RMB move to the crosshair; the camera stays on the hero}
+//   Multiplayer: the hero view takes the FPS controls; F switches to commanding the base (free camera, the game-mode
+//   controls in brackets; the hero fights on its own meanwhile) and back.
 #include "fp_render.h"
 #include "fp_game.h"
 #include "fp_fps.h"
 #include "fp_weapon.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <ctime>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -43,19 +60,48 @@ struct Args {
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 	RenderParams rp;
+	bool net = false; NetOptions netopt; // --host / --join
+	std::string record, watch; bool no_record = false; // --record FILE / --no-record, --watch FILE
 };
+// A two-player game's recording: replays/<date>_<time>_<you>-vs-<them>.fpr in the working directory.
+static std::string recording_name(const std::string& me, const std::string& them) {
+	std::time_t t = std::time(nullptr); char ts[32]; std::strftime(ts, sizeof ts, "%Y-%m-%d_%H-%M-%S", std::localtime(&t));
+	auto clean = [](std::string n) { for (char& c : n) if (!std::isalnum((unsigned char)c) && c != '-') c = '_'; return n.empty() ? std::string("player") : n; };
+	std::error_code ec; std::filesystem::create_directories("replays", ec);
+	return std::string("replays/") + ts + "_" + clean(me) + "-vs-" + clean(them) + ".fpr";
+}
 static void die(const char* m) { std::cerr << m << "\n"; std::exit(2); }
 static race_t parse_race(const std::string& s) { if (s == "terran") return race_t::terran; if (s == "protoss") return race_t::protoss; if (s == "zerg") return race_t::zerg; die("race must be terran, protoss or zerg"); return race_t::terran; }
 
 // A replay or a live game, plus its renderer.
 struct Session {
 	std::unique_ptr<replay_player> player; std::unique_ptr<Game> game; std::unique_ptr<Fps> fps; std::unique_ptr<Renderer> r; bool replay = true;
+	bool watch = false; std::unique_ptr<Fps> watched; // --watch: a recorded game and its FPS layer, which nobody plays
 	ModelLibrary* models = nullptr; // 3D models (kept across restarts: loaded models stay cached)
 	int model_mode = Renderer::kModelsBuildings; // kept across restarts; M cycles it
 	void open(Assets& assets, const Args& a) {
-		r.reset(); player.reset(); fps.reset(); game.reset();
-		if (!a.game_map.empty()) {
+		r.reset(); player.reset(); fps.reset(); watched.reset(); game.reset(); watch = false;
+		// what playback needs to make the same FPS layer: on, versus, fire rate, range, speed, free movement
+		auto settings = [&](bool versus) { return std::vector<int32_t>{a.fps ? 1 : 0, versus ? 1 : 0, a.fire_rate, a.range_pct, a.speed_pct, a.direct ? 1 : 0}; };
+		if (!a.watch.empty()) {
+			replay = false; watch = true; game = std::make_unique<Game>(); game->open_recording(a.data, a.watch, a.game_map);
+			const auto& set = game->recording()->setup().settings;
+			if (set.size() >= 6 && set[0]) { watched = std::make_unique<Fps>(*game, 7, set[2], set[3], set[4], set[5] != 0, set[1] != 0); if (!watched->start()) error("the recorded map has no room for the heroes"); }
+			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh, a.rp);
+		} else if (!a.game_map.empty() && a.net) { // blocks in the lobby (status on stdout) until the host starts the game
+			replay = false; game = std::make_unique<Game>();
+			game->open_net(a.data, a.game_map, a.race, a.netopt, [](const std::string& m) { std::cout << m << std::endl; }, Fps::settings_hash(a.fire_rate, a.range_pct, a.speed_pct, a.direct));
+			if (!a.no_record) { std::string path = a.record.empty() ? recording_name(a.netopt.name, game->opponent_name()) : a.record;
+				if (game->record(path, settings(true))) std::cout << "Recording the game into " << path << std::endl; else std::cerr << "cannot write the recording " << path << "\n"; }
+			fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct, a.speed_pct, a.direct, true);
+			if (!fps->start()) error("the map has no room for the heroes at the start locations");
+			std::cout << "Game started against " << game->opponent_name() << " (you are player " << game->owner() + 1 << "; latency " << game->latency() << " frames"
+				<< (game->lobby_rtt_ms() > 0 ? bwgame::format(", round trip %.0f ms", game->lobby_rtt_ms()).c_str() : "") << ")" << std::endl;
+			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh, a.rp);
+			r->set_viewer(game->owner()); // the other player's units only where yours see them
+		} else if (!a.game_map.empty()) {
 			replay = false; game = std::make_unique<Game>(); game->open(a.data, a.game_map, a.race, a.enemy, 1, a.fps);
+			if (!a.record.empty() && !game->record(a.record, settings(false))) std::cerr << "cannot write the recording " << a.record << "\n";
 			if (a.fps) { fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct, a.speed_pct, a.direct); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
 			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh, a.rp);
 		} else {
@@ -67,11 +113,19 @@ struct Session {
 		if (models) { r->set_models(models); r->set_model_mode(model_mode); }
 		r->update_units();
 	}
-	bool live() const { return game != nullptr; }
-	bool done() { return replay && player && player->is_done(); }
-	void step() { if (game) { game->step(); if (fps) fps->tick(); } else if (replay) player->next_frame(); else static_cast<game_player&>(*player).next_frame(); }
+	bool live() const { return game != nullptr && !watch; }
+	bool net() const { return game && game->net(); }
+	bool done() { return (replay && player && player->is_done()) || (watch && game->playback_done()); }
+	// One frame. Multiplayer: false while the other player has not caught up (or after the games disagreed).
+	bool step() {
+		if (game) { if (!game->step()) return false; if (fps) fps->tick(); if (watched) watched->tick(); }
+		else if (replay) player->next_frame(); else static_cast<game_player&>(*player).next_frame();
+		return true;
+	}
 	int frame() { return game ? game->frame() : player->st().current_frame; }
-	int end_frame() { return (!game && replay) ? player->replay_st.end_frame : 0; }
+	int end_frame() { return (!game && replay) ? player->replay_st.end_frame : watch ? game->recording()->end_frame() : 0; }
+	// --watch: a player's name by slot (the recording player's, or the other's)
+	std::string name_of(int slot) { const auto& su = game->recording()->setup(); std::string n = slot == su.owner ? su.names[0] : su.names[1]; return n.empty() ? "Player " + std::to_string(slot + 1) : n; }
 	state& st() { return game ? game->st() : player->st(); }
 	state_functions& fn() { return game ? game->fn() : player->funcs(); }
 };
@@ -91,8 +145,8 @@ struct View {
 	// Next unit after the current one whose owner passes `want` (owner < 0: any player unit).
 	void cycle_follow(const Renderer& r, int owner) {
 		const auto& us = r.units(); size_t start = 0;
-		for (size_t i = 0; i < us.size(); ++i) if (us[i].ptr == follow) start = i + 1;
-		for (size_t k = 0; k < us.size(); ++k) { const auto& u = us[(start + k) % us.size()]; if (owner < 0 ? u.owner < 8 : u.owner == owner) { follow = u.ptr; return; } }
+		for (size_t i = 0; i < us.size(); ++i) if (follow && us[i].ptr == follow) start = i + 1;
+		for (size_t k = 0; k < us.size(); ++k) { const auto& u = us[(start + k) % us.size()]; if (u.ptr && (owner < 0 ? u.owner < 8 : u.owner == owner)) { follow = u.ptr; return; } }
 	}
 	void apply_follow(const Renderer& r) {
 		if (!follow) return;
@@ -140,6 +194,9 @@ struct Hud {
 		SDL_SetTextureColorMod(e.tex, 255, 255, 255); SDL_Rect d{x, y, e.w, e.h}; SDL_RenderCopy(ren, e.tex, nullptr, &d);
 	}
 	int line_h(bool sm) const { return TTF_FontHeight(sm ? small : big) + 2; }
+	void text_center(int x, int y, const std::string& s, SDL_Color c, bool sm = false) {
+		int w = 0, h = 0; if (ok) TTF_SizeUTF8(sm ? small : big, s.c_str(), &w, &h); text(x - w / 2, y, s, c, sm);
+	}
 };
 
 // ---- in-game commands (live mode) ----
@@ -156,6 +213,7 @@ struct Commands {
 		auto* ut = g().fn().get_unit_type(t);
 		if (g().minerals() < ut->mineral_cost) { say("Not enough minerals"); return false; }
 		if (g().gas() < ut->gas_cost) { say("Not enough gas"); return false; }
+		if (g().net() && !g().fn().unit_can_build(sel, ut)) { say(name(sel) + " cannot train " + name(t) + " now (tech or queue full?)"); return false; }
 		if (!g().train(t)) { say(name(sel) + " cannot train " + name(t) + " now (supply, tech or queue full?)"); return false; }
 		say("Training " + name(t)); return true;
 	}
@@ -197,7 +255,9 @@ struct Commands {
 		auto* ut = g().fn().get_unit_type(t);
 		if (g().minerals() < ut->mineral_cost) { say("Not enough minerals for " + name(t)); return; }
 		xy_t<size_t> tile{(size_t)(pk.gx / 32), (size_t)(pk.gy / 32)};
-		if (g().act().action_build(g().owner(), g().fn().get_order_type(o), ut, tile)) say("Building " + name(t)); else say("Cannot build " + name(t) + " there");
+		xy pos{(int)tile.x * 32 + ut->placement_size.x / 2, (int)tile.y * 32 + ut->placement_size.y / 2};
+		if (!g().fn().can_place_building(sel, g().owner(), ut, pos, false, false)) { say("Cannot build " + name(t) + " there"); return; }
+		if (g().build(o, t, tile)) say("Building " + name(t)); else say("Cannot build " + name(t) + " there");
 	}
 };
 
@@ -267,7 +327,7 @@ static int autotest(Session& s, Assets&, const Args& a) {
 }
 
 int main(int argc, char** argv) {
-	Args a;
+	Args a; bool latency_given = false;
 	for (int i = 1; i < argc; ++i) {
 		std::string k = argv[i];
 		auto next = [&]() -> const char* { if (i + 1 >= argc) die("missing value"); return argv[++i]; };
@@ -298,15 +358,34 @@ int main(int argc, char** argv) {
 		else if (k == "--model-units") a.model_units = true;
 		else if (k == "--eye") a.rp.eye_h = atof(next());
 		else if (k == "--level-h") a.rp.level_h = atof(next());
+		else if (k == "--host") { a.net = true; a.netopt.host = true; // optional port
+			if (i + 1 < argc && argv[i + 1][0] && std::all_of(argv[i + 1], argv[i + 1] + strlen(argv[i + 1]), [](char c) { return std::isdigit((unsigned char)c) != 0; })) a.netopt.port = atoi(argv[++i]); }
+		else if (k == "--join") { a.net = true; a.netopt.host = false; std::string hp = next(); size_t c = hp.rfind(':');
+			a.netopt.address = hp.substr(0, c); if (c != std::string::npos) a.netopt.port = atoi(hp.c_str() + c + 1); }
+		else if (k == "--latency") { std::string v = next(); int n = atoi(v.c_str()); a.netopt.latency = v == "auto" ? 0 : n >= 1 ? n : -1; latency_given = true; }
+		else if (k == "--name") a.netopt.name = next();
+		else if (k == "--record") a.record = next();
+		else if (k == "--no-record") a.no_record = true;
+		else if (k == "--watch") a.watch = next();
 		else die("unknown option");
 	}
+	if (!a.watch.empty() && (a.net || a.autotest || a.fps || !a.input.empty())) die("--watch plays a recording: no --host/--join, --fps, --replay/--map or --autotest with it (--game MAP only names where the map is)");
 	if (a.fps && a.game_map.empty()) die("--fps needs --game MAP");
 	if (a.fire_rate < 10 || a.fire_rate > 1000) die("--fire-rate must be 10..1000 (percent of the StarCraft fire rate)");
 	if (a.range_pct < 10 || a.range_pct > 1000) die("--range must be 10..1000 (percent of the StarCraft weapon range)");
 	if (a.speed_pct < 10 || a.speed_pct > 1000) die("--speed must be 10..1000 (percent of the StarCraft movement speed)");
 	if (a.speed < 0.125 || a.speed > 16) die("--sim-speed must be 0.125..16 (the = / - keys use the same range)");
 	if (a.rp.view_dist < 200 || a.rp.eye_h < 1 || a.rp.level_h < 8) die("--view-dist must be >= 200, --eye >= 1, --level-h >= 8 (px)");
-	if (a.data.empty() || (a.input.empty() && a.game_map.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--selftest-input] [--autotest [--screenshot F.ppm]]");
+	if (a.net) {
+		if (a.game_map.empty()) die("--host / --join need --game MAP (the same map file on both computers)");
+		if (a.autotest) die("--autotest is single player only");
+		if (a.netopt.latency < 0 || a.netopt.latency > 8) die("--latency must be 1..8 frames or auto");
+		if (!a.netopt.host && latency_given) { std::cout << "note: the host picks the latency; --latency is ignored when joining" << std::endl; a.netopt.latency = 0; }
+		if (a.netopt.port < 1 || a.netopt.port > 65535 || a.netopt.address.empty()) die("--host [PORT] / --join HOST[:PORT]: port 1..65535");
+		a.fps = true; a.speed = 1.0; a.netopt.wait_seconds = a.netopt.host ? 0 : 60; // the host waits for a player; a joiner retries for a minute
+		if (a.netopt.name == "player") if (const char* u = getenv("USER")) if (*u) a.netopt.name = u;
+	}
+	if (a.data.empty() || (a.input.empty() && a.game_map.empty() && a.watch.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [(--host [PORT] [--latency N|auto] | --join HOST[:PORT]) [--name NAME] [--no-record]] [--record FILE.fpr] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE | --watch FILE.fpr [--game MAP]) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
 		std::unique_ptr<ModelLibrary> models;
@@ -350,11 +429,30 @@ int main(int argc, char** argv) {
 		auto last = Clock::now(); int shots = 0;
 		Pick pick; Overlay ov; bool moving = false; int last_move_order = -100;
 		bool firing = false, fire_ready = false, enemy_aimed = false; int last_shots = 0, last_hp = -1, pain_plays = 0, death_plays = 0; double flash = 0, pain_cd = 0; bool dead_seen = false;
-		SelfTest st; bool live_test = a.selftest_input && s.live() && !s.fps, fps_test = a.selftest_input && s.fps;
+		// Multiplayer: commanding the base (free camera, game-mode controls) instead of playing the hero; when to say that
+		// this game waits for the other player's; the hero last followed (a respawned hero is a new unit).
+		bool commander = false; WaitIndicator wait; int last_hero_id = -1;
+		// --watch: whose eyes the game is seen through (a player slot: their hero, their fog of war), -1 all of it
+		int watch_slot = -1;
+		auto watch_as = [&](int k) { // 0: all, 1 / 2: the player in the lower / higher slot
+			if (!s.watch) return;
+			int lo = std::min(s.game->owner(), s.game->enemy()), hi = std::max(s.game->owner(), s.game->enemy());
+			watch_slot = k == 1 ? lo : k == 2 ? hi : -1; s.r->set_viewer(watch_slot);
+			v.follow = watch_slot >= 0 && s.watched ? s.watched->hero(watch_slot) : nullptr;
+			cmd.say(watch_slot < 0 ? std::string("Seeing all of it (free camera)") : "Through " + s.name_of(watch_slot) + "'s eyes" + (v.follow ? "" : " (their hero is down)"));
+			s.r->update_units(acc / sim_dt, 0);
+		};
+		auto set_commander = [&](bool on) {
+			if (!s.fps || on == commander) return;
+			commander = on; firing = false; moving = false;
+			if (on) { v.follow = nullptr; if (s.fps->direct()) s.fps->halt(); s.fps->set_trigger_mode(Fps::kTriggerFree); cmd.say("Commanding your base: F back to your hero (it fights on its own meanwhile)"); }
+			else { s.fps->set_trigger_mode(Fps::kTriggerUp); if (unit_t* h = s.fps->player()) { v.follow = h; s.game->select(h); } cmd.say("Back in your hero"); }
+		};
+		SelfTest st; bool live_test = a.selftest_input && s.live() && !s.fps, fps_test = a.selftest_input && s.fps && !s.net(), net_test = a.selftest_input && s.net(), watch_test = a.selftest_input && s.watch;
 
 		// ---- scripted selftest plans ----
 		double st_x0 = v.cam.x, st_y0 = v.cam.y, st_h0 = v.cam.heading; int st_pause_f = 0, st_before_restart = 0; bool st_paused_at_check = false;
-		if (a.selftest_input && !s.live()) {
+		if (a.selftest_input && !s.live() && !s.watch) {
 			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
 			K(0.1, "note start", [&] { st_x0 = v.cam.x; st_y0 = v.cam.y; });
 			K(0.6, "walk", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_W, SDLK_w); });
@@ -475,6 +573,56 @@ int main(int argc, char** argv) {
 			K(8.7, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 
+		if (net_test) { // multiplayer plan, run by both players' games (start both with --selftest-input)
+			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
+			K(2.5, "check lockstep", [&] { st.check("the game runs in lockstep with the other player's (frame " + std::to_string(s.frame()) + ", " + (s.game->failure().empty() ? std::string("no failure") : s.game->failure()) + ")", s.frame() > 30 && s.game->failure().empty() && !s.game->opponent_left()); });
+			K(2.55, "check latency", [&] { Net& n = *s.game->network();
+				st.check(bwgame::format("the latency is the host's pick from the round trip (%d frames; round trip %.2f ms over %d pings%s)", s.game->latency(), n.lobby_rtt_ms(), n.lobby_samples(), a.netopt.host ? "" : ", received from the host").c_str(),
+					a.netopt.host ? (a.netopt.latency > 0 ? s.game->latency() == a.netopt.latency : n.lobby_samples() >= Net::kPingSamples && s.game->latency() == pick_latency(n.lobby_rtt_ms())) : n.latency_from_host());
+				st.check(bwgame::format("the round trip is measured during the game (%.1f ms, shown on the HUD)", s.game->rtt_ms()).c_str(), s.game->rtt_ms() > 0); });
+			K(2.6, "check hero", [&] { st.check("your hero is in the game and the camera is on it", s.fps->alive() && v.follow == s.fps->player()); });
+			K(2.7, "check fog", [&] { int seen = 0; for (auto& u : s.r->units()) if (u.owner == s.game->enemy()) ++seen;
+				st.check("the other player's base, far away in the fog, is not drawn (" + std::to_string(seen) + " of their units drawn)", seen == 0); });
+			K(2.75, "check terrain fog", [&] { xy mine = s.game->start_location(s.game->owner()), theirs = s.game->start_location(s.game->enemy());
+				float a = s.r->fog_at(mine.x, mine.y), b = s.r->fog_at(theirs.x, theirs.y);
+				st.check(bwgame::format("the terrain is lit around your base (%.2f) and dimmed at the other one, never seen (%.2f)", a, b).c_str(), a == Renderer::kLit && b == Renderer::kUnexplored); });
+			K(2.8, "F", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_F, SDLK_f); });
+			K(3.1, "check commander", [&] { st.check("F steps out of the hero to command the base (free camera)", commander && v.follow == nullptr); });
+			K(3.2, "F", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_F, SDLK_f); });
+			K(3.5, "check hero view", [&] { st.check("F again: back in the hero", !commander && v.follow == s.fps->player() && s.fps->player() != nullptr); });
+			K(3.6, "P", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_P, SDLK_p); });
+			K(3.9, "check no pause", [&] { st.check("P does not pause a multiplayer game", !paused && cmd.msg.find("No pause") != std::string::npos); });
+			if (s.fps->direct()) { // free movement: the hero walks on W, the camera with it (ahead of the simulation by the latency)
+				static double x0 = 0, y0 = 0;
+				K(4.0, "W down", [&] { auto at = s.fps->mover_position(s.game->owner()); x0 = at.first; y0 = at.second; push_key(SDL_KEYDOWN, SDL_SCANCODE_W, SDLK_w); });
+				K(4.6, "check walk", [&] { auto at = s.fps->mover_position(s.game->owner()); double d = std::hypot(at.first - x0, at.second - y0), lead = std::hypot(v.cam.x - at.first, v.cam.y - at.second);
+					st.check("W walks the hero (free movement: " + std::to_string((int)d) + " px)", d > 30);
+					st.check("the camera is on the hero, at most a few frames ahead (" + std::to_string((int)lead) + " px)", lead <= 4 * Fps::kTopSpeed / 256.0); });
+				K(4.7, "W up", [&] { push_key(SDL_KEYUP, SDL_SCANCODE_W, SDLK_w); });
+				K(5.7, "check rest", [&] { /* friction stops it in about 0.6 s, plus the latency */ double sp = s.fps->speed(), lead = 0; auto at = s.fps->mover_position(s.game->owner()); lead = std::hypot(v.cam.x - at.first, v.cam.y - at.second);
+					st.check("releasing W stops the hero and the camera on it (" + std::to_string((int)sp) + " px/s, camera " + std::to_string((int)lead) + " px off)", sp < 2 && lead < 1); });
+			}
+			K(5.9, "check sync", [&] { st.check("still in sync with the other game at frame " + std::to_string(s.frame()) + " (state hashes compared every frame)", s.game->failure().empty() && s.game->desync_frame() < 0); });
+			K(6.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
+		}
+
+		if (watch_test) { // a recorded game: it plays, the views switch, it plays to its end without going its own way
+			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
+			int lo = std::min(s.game->owner(), s.game->enemy()), hi = std::max(s.game->owner(), s.game->enemy());
+			K(0.6, "check playing", [&] { st.check("the recording plays (frame " + std::to_string(s.frame()) + (s.game->failure().empty() ? "" : ", " + s.game->failure()) + ")", s.frame() > 5 && s.game->failure().empty()); });
+			K(0.7, "1", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_1, SDLK_1); });
+			K(0.9, "check 1", [&, lo] { st.check("1: through the first player's eyes (their hero, their fog of war)", s.r->viewer() == lo && v.follow && v.follow == s.watched->hero(lo)); });
+			K(1.0, "2", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_2, SDLK_2); });
+			K(1.2, "check 2", [&, hi] { st.check("2: through the second player's", s.r->viewer() == hi && v.follow && v.follow == s.watched->hero(hi)); });
+			K(1.3, "0", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_0, SDLK_0); });
+			K(1.5, "check 0", [&] { st.check("0: all of it, free camera", s.r->viewer() == -1 && !v.follow); });
+			K(1.6, "fast", [&] { speed = 16; });
+			double end_t = 1.6 + s.end_frame() / 23.81 / 16 + 1.5;
+			K(end_t, "check end", [&] { st.check("it plays to its end (frame " + std::to_string(s.frame()) + " of " + std::to_string(s.end_frame()) + "), every frame's state as recorded" + (s.game->failure().empty() ? "" : ": " + s.game->failure()),
+				s.done() && s.frame() >= s.end_frame() && s.game->failure().empty()); });
+			K(end_t + 0.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
+		}
+
 		while (run) {
 			auto now = Clock::now(); double dt = std::min(0.1, std::chrono::duration<double>(now - last).count()); last = now;
 			if (a.selftest_input) st.due(dt);
@@ -486,8 +634,8 @@ int main(int argc, char** argv) {
 				if (e.type == SDL_QUIT) run = false;
 				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-kMaxPitch * a.rh, std::min(kMaxPitch * a.rh, v.cam.pitch - e.motion.yrel * 0.8)); }
 				else if (e.type == SDL_MOUSEBUTTONUP && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = false; }
-				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
-				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && s.fps->direct() && e.button.button == SDL_BUTTON_RIGHT) {
+				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && !commander && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
+				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && s.fps->direct() && !commander && e.button.button == SDL_BUTTON_RIGHT) {
 					if (pick.ground) s.fps->go_to(pick.gx, pick.gy); else cmd.say("Aim at the floor");
 				}
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.live()) {
@@ -507,18 +655,23 @@ int main(int argc, char** argv) {
 					switch (e.key.keysym.sym) {
 						case SDLK_q: run = false; break;
 						case SDLK_ESCAPE: captured = !captured; SDL_SetRelativeMouseMode(captured ? SDL_TRUE : SDL_FALSE); break;
-						case SDLK_p: paused = !paused; break;
-						case SDLK_EQUALS: case SDLK_PLUS: speed = std::min(16.0, speed * 2); break;
-						case SDLK_MINUS: speed = std::max(0.125, speed / 2); break;
-						case SDLK_TAB: v.cycle_follow(*s.r, s.live() ? s.game->owner() : -1); if (s.live() && v.follow) s.game->select(const_cast<unit_t*>(v.follow)); break;
-						case SDLK_f: v.follow = nullptr; break;
-						case SDLK_r: s.open(assets, a); pick = Pick{}; v.follow = nullptr; /* the old game's units are gone: drop pointers into it */ v.spawn(*s.r); begin_game_view(); acc = 0; moving = false; firing = false; last_shots = 0; last_hp = -1; dead_seen = false; flash = 0; break;
+						case SDLK_p: if (s.net()) cmd.say("No pause in a multiplayer game"); else paused = !paused; break;
+						case SDLK_EQUALS: case SDLK_PLUS: if (s.net()) cmd.say("The game speed is fixed in a multiplayer game"); else speed = std::min(16.0, speed * 2); break;
+						case SDLK_MINUS: if (s.net()) cmd.say("The game speed is fixed in a multiplayer game"); else speed = std::max(0.125, speed / 2); break;
+						case SDLK_TAB: if (s.net()) set_commander(true); v.cycle_follow(*s.r, s.live() ? s.game->owner() : -1); if (s.live() && v.follow) s.game->select(const_cast<unit_t*>(v.follow)); break;
+						case SDLK_f: if (s.net()) set_commander(!commander); else { v.follow = nullptr; watch_slot = -1; } break;
+						case SDLK_0: watch_as(0); break;
+						case SDLK_1: watch_as(1); break;
+						case SDLK_2: watch_as(2); break;
+						case SDLK_r: if (s.net()) { cmd.say("No restart in a multiplayer game"); break; } s.open(assets, a); pick = Pick{}; v.follow = nullptr; watch_slot = -1; /* the old game's units are gone: drop pointers into it */ v.spawn(*s.r); begin_game_view(); acc = 0; moving = false; firing = false; last_shots = 0; last_hp = -1; dead_seen = false; flash = 0; break;
 						case SDLK_F12: save_ppm(bwgame::format("fp_shot_%03d.ppm", shots++), fb, a.rw, a.rh); break;
 						case SDLK_m: if (s.models) { // cycle sprites only -> 3D buildings -> 3D buildings and units
 							static const char* names[3] = {"Models: off (sprites only)", "Models: buildings and minerals", "Models: buildings and units (experimental, not animated)"};
-							s.model_mode = (s.model_mode + 1) % 3; s.r->set_model_mode(s.model_mode); s.r->update_units(); cmd.say(names[s.model_mode]);
+							s.model_mode = (s.model_mode + 1) % 3; s.r->set_model_mode(s.model_mode); s.r->update_units(acc / sim_dt, 0); cmd.say(names[s.model_mode]);
 						} else cmd.say("No models loaded (run with --models DIR)"); break;
 						case SDLK_e: if (s.live()) { // possess the selected unit / release
+							if (s.net() && !commander) { cmd.say("Press F to command your base"); break; }
+							if (s.net() && !v.follow && s.fps->player() && s.game->selected() == s.fps->player()) { set_commander(false); break; } // your hero: back into it
 							if (v.follow) { v.follow = nullptr; cmd.say("Free camera"); }
 							else if (unit_t* sel = s.game->selected()) { if (cmd.own(sel)) { v.follow = sel; cmd.say("Possessing " + cmd.name(sel)); } else cmd.say("You can only possess your own units"); }
 							else cmd.say("Select one of your units first"); } break;
@@ -529,16 +682,24 @@ int main(int argc, char** argv) {
 					}
 				}
 			}
-			if (s.fps) s.fps->set_trigger(firing && fire_ready); // the weapon fires only while the trigger is held on a target in range
+			if (s.fps && !commander) s.fps->set_trigger(firing && fire_ready); // the weapon fires only while the trigger is held on a target in range
 			// simulation
-			if (!paused && !s.done()) { acc += dt * speed; int n = 0; while (acc >= sim_dt && n < 16 && !s.done()) { s.step(); acc -= sim_dt; ++n; } if (n == 16) acc = 0; }
-			s.r->update_units();
+			// Multiplayer: while the other player's game has not caught up (lockstep) the time goes, rather than piling up to be
+			// caught up with: a game that kept it would stay early on its clock and wait before nearly every step, stepping
+			// in pairs after (stutter). Dropped, it settles a little later, where neither game waits for the other.
+			bool waiting = false;
+			if (!paused && !s.done()) { acc += dt * speed; int n = 0; while (acc >= sim_dt && n < 16 && !s.done()) { if (!s.step()) { waiting = true; acc = sim_dt; break; } acc -= sim_dt; ++n; } if (n == 16) acc = 0; }
+			wait.update(waiting, dt);
+			s.r->update_units(acc / sim_dt, dt); // drawn between the last two simulation frames; the fog of war fades
 			// FPS: firing, feedback events
 			if (s.fps) {
 				Fps& F = *s.fps; unit_t* hero = F.player();
-				if (hero) v.follow = hero;
+				int hero_id = hero ? (int)s.game->fn().get_unit_id(hero).raw_value : 0;
+				if (s.net() && hero_id != last_hero_id) { // a new hero (respawned): select it so RMB orders it
+					last_hero_id = hero_id; if (hero) { dead_seen = false; if (!commander) s.game->select(hero); } }
+				if (hero && !commander) v.follow = hero;
 				const unit_t* tgt = nullptr; enemy_aimed = false; fire_ready = false;
-				if (hero) {
+				if (hero && !commander) {
 					auto is_enemy = [&](const unit_t* u) { return F.is_enemy(u); };
 					tgt = is_enemy(pick.unit) ? pick.unit : s.r->nearest_to_crosshair(v.cam, v.follow, 0.045 * a.rw, is_enemy); // crosshair target, with a little aim assist
 					enemy_aimed = tgt != nullptr; fire_ready = tgt && F.in_range(tgt);
@@ -556,16 +717,14 @@ int main(int argc, char** argv) {
 			// movement: free camera flies; a possessed unit in game mode is driven with move orders
 			double run_mul = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) ? 3.0 : 1.0, sp = 110.0 * run_mul * dt;
 			double fwd = (keys[SDL_SCANCODE_W] ? sp : 0) - (keys[SDL_SCANCODE_S] ? sp : 0), str = (keys[SDL_SCANCODE_D] ? sp : 0) - (keys[SDL_SCANCODE_A] ? sp : 0);
-			if (s.fps && s.fps->direct() && v.follow) { // direct mode: velocity input, walk and shoot at once, no orders
+			if (s.fps && s.fps->direct() && !commander && !v.follow) s.fps->drive(0, 0); // no hero: no input left over for the next one
+			if (s.fps && s.fps->direct() && !commander && v.follow) { // direct mode: walking input (sent before the next step), walk and shoot at once, no orders
 				const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180;
 				double f = fwd > 0 ? 1 : fwd < 0 ? -1 : 0, sd = str > 0 ? 1 : str < 0 ? -1 : 0;
-				if (f || sd) {
-					double dx = std::cos(h) * f - std::sin(h) * sd, dy = std::sin(h) * f + std::cos(h) * sd, len = std::hypot(dx, dy);
-					s.fps->drive(dx / len, dy / len, dt);
-				} else s.fps->drive(0, 0, dt);
+				s.fps->drive(std::cos(h) * f - std::sin(h) * sd, std::sin(h) * f + std::cos(h) * sd);
 				moving = false;
 			} else if (s.live() && v.follow) {
-				if ((fwd || str) && !(s.fps && firing && fire_ready) && (!s.fps || s.fps->alive())) {
+				if ((fwd || str) && !(s.fps && firing && fire_ready) && (!s.fps || commander || s.fps->alive())) {
 					if (!moving || s.frame() - last_move_order >= 6) {
 						const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180; double f = fwd > 0 ? 1 : fwd < 0 ? -1 : 0, sd = str > 0 ? 1 : str < 0 ? -1 : 0;
 						double dx = std::cos(h) * f - std::sin(h) * sd, dy = std::sin(h) * f + std::cos(h) * sd, len = std::hypot(dx, dy); dx /= len; dy /= len;
@@ -575,10 +734,13 @@ int main(int argc, char** argv) {
 					}
 				} else if (moving && !(s.fps && firing && fire_ready)) { s.game->stop(); moving = false; }
 			} else { if (moving) { moving = false; } if (fwd || str) { if (v.follow) v.follow = nullptr; v.move(*s.r, fwd, str); } }
+			if (s.watch && watch_slot >= 0 && s.watched) if (unit_t* h = s.watched->hero(watch_slot)) if (v.follow != h) v.follow = h; // back in a respawned hero
 			v.apply_follow(*s.r);
+			if (s.fps && s.fps->direct() && !commander && v.follow && v.follow == s.fps->player()) { // ahead of the simulation by the input on its way, smooth between frames
+				double x, y; if (s.fps->view_position(acc / sim_dt, x, y)) { v.cam.x = x; v.cam.y = y; } }
 			// overlay: selection and hover
 			ov.selected.clear(); ov.hover = pick.unit;
-			if (s.live()) for (unit_t* u : s.game->act().selected_units(s.game->owner())) ov.selected.push_back(u);
+			if (s.live()) for (unit_t* u : s.game->selection()) ov.selected.push_back(u);
 			// render
 			auto t0 = Clock::now(); s.r->render(v.cam, v.follow, fb.data(), &ov);
 			pick = s.r->pick_center(v.cam, v.follow);
@@ -587,7 +749,7 @@ int main(int argc, char** argv) {
 			int ow, oh; SDL_GetRendererOutputSize(ren, &ow, &oh); // letterbox the scene, keep aspect
 			double sc = std::min((double)ow / a.rw, (double)oh / a.rh); SDL_Rect dst{(int)((ow - a.rw * sc) / 2), (int)((oh - a.rh * sc) / 2), (int)(a.rw * sc), (int)(a.rh * sc)};
 			SDL_RenderCopy(ren, tex, nullptr, &dst);
-			if (s.fps) {
+			if (s.fps && !commander) {
 				vm.update(dt, (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_D]) && s.fps->alive());
 				if (s.fps->alive()) vm.draw(ren, dst);
 				if (flash > 0) { SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND); SDL_SetRenderDrawColor(ren, 200, 0, 0, (Uint8)(flash / 0.35 * 110)); SDL_RenderFillRect(ren, &dst); }
@@ -597,30 +759,49 @@ int main(int argc, char** argv) {
 			cmd.msg_t = std::max(0.0, cmd.msg_t - dt);
 			if (hud.ok) {
 				SDL_Color white{255, 255, 255, 255}, yellow{255, 230, 90, 255}, cyan{120, 220, 255, 255}, grey{200, 200, 200, 255}; int pad = 10, lh = hud.line_h(false), sl = hud.line_h(true);
-				if (s.fps) {
+				if (s.fps && !commander) {
 					Fps& F = *s.fps; int hp = F.player_hp(), mx = std::max(1, F.player_max_hp());
-					hud.text(dst.x + dst.w / 2 - 170, dst.y + pad, bwgame::format("Wave %d     Kills %d     Enemies %d", F.wave, F.kills, F.enemies_alive()), yellow);
+					if (s.net()) { // hero score (kills : deaths) and the base's economy
+						hud.text_center(dst.x + dst.w / 2, dst.y + pad, bwgame::format("You %d : %d %s", F.kills, F.deaths, s.game->opponent_name().c_str()), yellow);
+						hud.text(dst.x + pad, dst.y + pad, bwgame::format("Minerals %d  Gas %d  Supply %d/%d", s.game->minerals(), s.game->gas(), s.game->supply_used(), s.game->supply_available()), white, true);
+					} else hud.text(dst.x + dst.w / 2 - 170, dst.y + pad, bwgame::format("Wave %d     Kills %d     Enemies %d", F.wave, F.kills, F.enemies_alive()), yellow);
 					int bw = dst.w / 4, bh = std::max(10, dst.h / 36), bx = dst.x + pad, by = dst.y + dst.h - pad - bh - lh;
 					SDL_SetRenderDrawColor(ren, 20, 20, 20, 255); SDL_Rect bg{bx - 2, by - 2, bw + 4, bh + 4}; SDL_RenderFillRect(ren, &bg);
 					double f = std::max(0.0, std::min(1.0, (double)hp / mx)); SDL_SetRenderDrawColor(ren, f > 0.5 ? 60 : 220, f > 0.5 ? 200 : f > 0.25 ? 170 : 40, 40, 255); SDL_Rect fg{bx, by, (int)(bw * f), bh}; SDL_RenderFillRect(ren, &fg);
 					hud.text(bx, by - lh, bwgame::format("HP %d / %d", hp, mx), white);
-					if (!F.alive()) { hud.text(dst.x + dst.w / 2 - 110, dst.y + dst.h / 2 - lh, "YOU DIED", SDL_Color{255, 90, 90, 255}); hud.text(dst.x + dst.w / 2 - 130, dst.y + dst.h / 2 + 4, "Press R to restart", white, true); }
+					if (!F.alive()) { hud.text(dst.x + dst.w / 2 - 110, dst.y + dst.h / 2 - lh, "YOU DIED", SDL_Color{255, 90, 90, 255}); hud.text(dst.x + dst.w / 2 - 130, dst.y + dst.h / 2 + 4, s.net() ? std::string(bwgame::format("Back in %d s", (F.respawn_in() + 23) / 24)) : std::string("Press R to restart"), white, true); }
 				} else if (s.live()) {
 					Game& G = *s.game;
 					hud.text(dst.x + pad, dst.y + pad, bwgame::format("Minerals %d    Gas %d    Supply %d/%d", G.minerals(), G.gas(), G.supply_used(), G.supply_available()), yellow);
 					int y = dst.y + dst.h - pad - lh * 2;
-					int nsel = 0; unit_t* first = nullptr; for (unit_t* u : G.act().selected_units(G.owner())) { if (!first) first = u; ++nsel; }
+					int nsel = 0; unit_t* first = nullptr; for (unit_t* u : G.selection()) { if (!first) first = u; ++nsel; }
 					if (first) hud.text(dst.x + pad, y, nsel > 1 ? bwgame::format("%s +%d more", cmd.name(first).c_str(), nsel - 1) + "" : bwgame::format("%s   HP %d/%d", cmd.name(first).c_str(), first->hp.integer_part(), first->unit_type->hitpoints.integer_part()), white);
 					else hud.text(dst.x + pad, y, "Nothing selected", grey);
-					if (v.follow && !s.fps) hud.text(dst.x + pad, y - sl, "Possessing: " + cmd.name(v.follow) + "  (E to release, WASD to drive)", cyan, true);
+					if (v.follow && (!s.fps || commander)) hud.text(dst.x + pad, y - sl, "Possessing: " + cmd.name(v.follow) + "  (E to release, WASD to drive)", cyan, true);
+					if (commander) hud.text(dst.x + pad, y - sl * 2, bwgame::format("Commanding your base (F: back to your hero)   You %d : %d %s", s.fps->kills, s.fps->deaths, G.opponent_name().c_str()), cyan, true);
+				} else if (s.watch) {
+					int lo = std::min(s.game->owner(), s.game->enemy()), hi = std::max(s.game->owner(), s.game->enemy());
+					hud.text(dst.x + pad, dst.y + pad, bwgame::format("Recording  %s vs %s  frame %d / %d", s.name_of(lo).c_str(), s.name_of(hi).c_str(), s.frame(), s.end_frame()), yellow);
+					hud.text(dst.x + pad, dst.y + pad + lh, watch_slot < 0 ? std::string("Seeing all of it") : "Through " + s.name_of(watch_slot) + "'s eyes", cyan, true);
+					if (!s.game->failure().empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3, s.game->failure(), SDL_Color{255, 90, 90, 255}, true);
 				} else hud.text(dst.x + pad, dst.y + pad, bwgame::format("Replay  frame %d / %d", s.frame(), s.end_frame()), yellow);
+				if (s.net()) { // the match: its end, the other player's connection, a failure
+					Game& G = *s.game; std::string opp = G.opponent_name(), big, line;
+					if (!G.failure().empty()) { big = "GAME STOPPED"; line = G.failure(); }
+					else if (G.won()) big = "VICTORY";
+					else if (G.lost()) big = "DEFEAT";
+					if (G.failure().empty() && G.opponent_left()) line = G.opponent_dropped() ? "Lost the connection to " + opp : opp + " left the game";
+					else if (G.failure().empty() && wait.shown()) line = "Waiting for " + opp + (wait.stalled >= 2 ? bwgame::format("... %d s", (int)wait.stalled).c_str() : "...");
+					if (!big.empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3, big, SDL_Color{255, 220, 80, 255});
+					if (!line.empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3 + lh + 4, line, white);
+				}
 				if (pick.unit) { // what the crosshair is on
 					const unit_t* u = pick.unit; const char* rel = s.live() ? (u->owner == s.game->owner() ? "yours" : u->owner == s.game->enemy() ? "enemy" : "neutral") : "";
 					hud.text(dst.x + dst.w / 2, dst.y + dst.h / 2 + 16, bwgame::format("%s %s  %d/%d", cmd.name(u).c_str(), rel, u->hp.integer_part(), u->unit_type->hitpoints.integer_part()), white, true, false);
 				}
 				if (cmd.msg_t > 0) hud.text(dst.x + dst.w / 2 - 150, dst.y + dst.h - pad - lh * 4 - sl, cmd.msg, cyan);
-				hud.text(dst.x + dst.w - pad, dst.y + pad, bwgame::format("%.0f fps  x%.3g%s%s", fps, speed, paused ? "  PAUSED" : "", s.done() ? "  END" : ""), grey, true, true);
-				hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, (std::string(s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : "TAB follow  F free  P pause  =/- speed  R restart") + (s.models ? "  M models" : "")), grey, true, true);
+				hud.text(dst.x + dst.w - pad, dst.y + pad, s.net() ? std::string(bwgame::format("%.0f fps  latency %d", fps, s.game->latency())) + (s.game->rtt_ms() > 0 ? bwgame::format("  ping %.0f ms", s.game->rtt_ms()).c_str() : "") : std::string(bwgame::format("%.0f fps  x%.3g%s%s", fps, speed, paused ? "  PAUSED" : "", s.done() ? "  END" : "")), grey, true, true);
+				hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, (std::string(s.net() ? (commander ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F back to your hero" : "WASD move  Mouse aim  LMB (hold) fire  RMB move here  F command your base") : s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : s.watch ? "1 / 2 a player's eyes  0 all  TAB follow  F free  P pause  =/- speed  R restart" : "TAB follow  F free  P pause  =/- speed  R restart") + (s.models ? "  M models" : "")), grey, true, true);
 			}
 			SDL_RenderPresent(ren);
 			if (a.no_vsync) { // soft cap around 240 fps so the uncapped path does not burn the CPU
@@ -630,8 +811,11 @@ int main(int argc, char** argv) {
 			fps = fps * 0.9 + 0.1 / std::max(1e-4, dt);
 			if ((title_t += dt) > 0.4) { title_t = 0;
 				std::string t = bwgame::format("StarCraft FP | %.0f fps (render %.1f ms) | frame %d/%d | x%.3g%s%s | %s", fps, render_ms, s.frame(), s.end_frame(), speed, paused ? " PAUSED" : "", s.done() ? " END" : "", v.follow ? "following unit" : "free camera");
+				if (s.net()) t += " | 1v1 vs " + s.game->opponent_name();
 				SDL_SetWindowTitle(win, t.c_str()); }
 		}
+		if (s.game && !s.game->recording_path().empty()) std::cout << "Recorded the game into " << s.game->recording_path() << " (fp_play --watch FILE to watch it)" << std::endl;
+		if (s.net()) s.game->leave(); // the other game sees this player leave rather than a dropped connection
 		int rc = 0;
 		if (a.selftest_input) {
 			for (auto& r : st.results) std::cout << (r.second ? "  ok   " : "  FAIL ") << r.first << "\n";

@@ -114,6 +114,99 @@ Status: `todo`, `doing`, `done`.
 - **C5** Enemy build order and attack waves; win/lose by the main building.
 - **C6** Tactical map while TAB is held.
 
+### Phase 4 — multiplayer (`fp-multiplayer`)
+Asked for 2026-10-25: keep the game at the FPS level plus the RTS commands and production that exist; no full StarCraft
+client (command card, hotkeys) and no Remastered client (closed, no API; see the 2026-10-22 assessment). OpenBW's `sync.h`
+(lockstep over TCP, two players) is the network layer.
+- **N1** `done` 1v1 over TCP (`--host [PORT]` / `--join HOST[:PORT]`, `src/fp_net.h`). Lobby inside the map load (OpenBW's
+  setup callback, before starting units exist): slots, races, host starts, melee start for both. Every command goes through
+  one path (`Game::command`/`custom`, replay-format actions): single player applies it at once (the gametest checksum is
+  unchanged), multiplayer sends it to both games for the same frame. The FPS layer is per player (`Fps` versus mode): a hero
+  each, trigger and out-of-range misses as commands, respawn after 10 s, weapon tuning once per weapon. Non-blocking lockstep
+  in the render loop; F switches between the hero and commanding the base (the hero fights on its own meanwhile). Start
+  checks (version, map CRC, latency, tuning) and a state hash every frame ("out of sync at frame N"); TCP_NODELAY (without it
+  localhost lockstep ran at ~50 frames/s, with it ~4600). Fog of war for the other player's units (`Renderer::set_viewer`).
+  Found and fixed: `Renderer::depth_at` read the depth buffer before the first render (crash when an enemy is in view on
+  frame 0, which only multiplayer has); OpenBW's TCP server frees its client list before its io_service, so a read still
+  pending at exit released a client into freed memory (abort on quit in 4 of 4 window runs; `Net::~Net` closes the
+  sockets and runs the aborted handlers first). `fp_nettest` (AddressSanitizer build: the release build passed with the
+  corruption); multiplayer `--selftest-input` (both games).
+- **N2** `done` Free movement in multiplayer (`--fps-move-shoot`, both players; part of the start check). The hero's
+  physics runs once per simulation frame for every hero, in integers (1/256 px; OpenBW's direction table; acceleration,
+  friction, speed cap and per-axis wall slide in steps of at most 4 px), in `Fps::tick`; `move_unit` keeps OpenBW's unit
+  (finder, collision flags) on it, and OpenBW's idle targeting is stopped so it never walks the hero. Input as commands: the
+  walk direction (one byte, sent before a step when it changed; `Game::set_before_step`), the RMB walk target, halt, and
+  shots (target unit id; range checked in integers when the shot lands). Commanding the base hands the hero to OpenBW and
+  back. Camera: `Fps::view_position` runs the same physics ahead over the player's own input still in flight
+  (`Game::command_frame`: `latency` frames, one more while waiting for the other game) and draws between frames, so the
+  view moves on the key press; the simulation then ends up exactly there (the nettest compares every frame: 0 off in
+  2300+). The mover state is in the per-frame hash. Single player uses the same code: speed and feel as before (192 px/s,
+  ~0.6 s to stop), now smooth between frames rather than per render frame. Found and fixed: free movement counted every
+  shot twice (when fired and again from the weapon cooldown), so the gun animation and sound played twice per shot (on `main`:
+  2 shots, 4 counted; `fp_fpstest` now checks it). Not done: the other player's hero is drawn at simulation steps
+  (interpolation is N3).
+- **N3** `done` Feel over a real network. Latency from the round trip: the host pings the joiner in the lobby (our own messages,
+  taken out of the TCP stream before OpenBW's sync layer by `NetServer`), takes the 90th percentile of 12+ samples and picks
+  1 + ceil((rtt/2 + 25 ms) / 42 ms) frames, at least 2 (`pick_latency`; `--latency N` on the host fixes it). Both games must switch
+  while no scheduled message is on its way, since a game schedules what it receives with its own latency of that moment: after
+  both slots and races have been applied, before the start, which is sent after the latency (so the joiner has switched by then);
+  the lobby itself runs at 2. Fixed for the game (changed later, scheduled commands could land out of order). Ping every 0.5 s in
+  the game for the HUD. Drawing between frames: the renderer keeps each unit's position on the previous simulation frame and draws
+  `acc / sim_dt` of the way to the current one (new units, gaps over 4 frames and jumps over 64 px are drawn where they are); the
+  follow camera reads the same positions. Lockstep pacing: a game blocked on the other no longer keeps up to two frames of backlog
+  to catch up with; it drops the time. Kept, the game that started earlier on its clock stayed early and waited a few ms before
+  nearly every step, then stepped in pairs (stutter; over a 100 ms relay the host was blocked on 5.5 s of 7). Dropped, it settles
+  later on its clock, where neither game waits (0-0.15 s of 7). "Waiting for NAME..." (`WaitIndicator`): on after 0.3 s standing
+  still or 40% of about the last second waiting, off after 1 s of running without either. Found and fixed (N2): a walking
+  direction of 255 (just west of north) was sent as one byte, 255 being "no input", so walking that way braked the hero for a frame
+  in the simulation while the camera kept going (about 2 px off); the nettest's prediction check failed in 3 of 4 runs of the
+  committed N2 code (each run is a different game; the baseline run had passed by luck). Now two bytes; `kProtocol` 3.
+  Tests: `fp_nettest` sessions 5-6 through `SlowLink` (a relay holding everything 50 ms each way; games paced like the window at
+  60 Hz): round trip measured at ~101-104 ms, latency 3 for both, the games keep up with the clock and seldom wait; at latency 2
+  over the same relay they fall ~13% behind and wait ~2 s of 8. Plus the latency table, the indicator's timing on synthetic stop
+  patterns, auto latency over localhost (2), `fp_fpstest` units drawn between frames and the direction-255 walk (fails with the
+  old encoding). Not checked: play by a person over a real network (feel cannot be tested headless); the 25 ms margin assumes
+  windows rendering at 60 Hz or more (the ping is answered once per rendered frame: ~30-70 ms with two windows on one computer).
+- **N4** `done` Fog of war, drawn for one player (`Renderer::set_viewer`; renderer only, plus one simulation rule). Terrain:
+  per map tile from OpenBW's vision bits, 1 where the viewer sees, 0.55 where it has seen, 0.3 where it never has (darker than
+  StarCraft's fog, lighter than its black: the world stays readable at a distance), blended between tile centres, faded over
+  0.25 s (OpenBW clears vision every 100 frames and units add theirs back: drawn as it is, the fog closes in jumps); sprites and
+  models take the brightness of their spot. Remembered buildings: the last view of each enemy building seen, not targetable,
+  drawn while out of sight; forgotten once a tile of its footprint (the tiles OpenBW's own visibility test reads) is in sight and
+  the building is not seen there. Cloaked units: an enemy's undetected one is a shimmer (the pixels behind it, displaced up and
+  down in waves, read from a copy of the column, so the render threads stay apart) and cannot be picked; burrowed ones are not
+  drawn; detected and own ones are see-through. The FPS layer does not target undetected units and the simulation drops a
+  free-movement shot at one (`kProtocol` 4). Found and fixed: images without an anim file of their own drew as flat boxes (the
+  Command Center, the Dark Templar, the Lurker: "missing HD sprites" at exit); they share the anim of the first image with
+  their GRP (as `tools/hd_units.py` found), which covers 129 of 131. `fp_fogtest` (new): brightness lit/fogged/unexplored and
+  the fade, a view of an unexplored base drawn at ~0.3 of its brightness, a Nexus scouted, remembered (dimmed, picks nothing),
+  destroyed unseen and still remembered, forgotten when seen again; a Dark Templar undetected (shimmer, not picked, not an FPS
+  target) and detected by a Missile Turret (see-through, a target); a burrowed Zergling not drawn; without a viewer no fog;
+  every unit drawn has art; 3.1 ms per 640x400 frame with fog, 2.6 without. Multiplayer `--selftest-input`: your base lit, the
+  other one dark. Golden views unchanged (no viewer there). Not covered: nothing in the game's controls makes cloaked or burrowed
+  units yet; the shimmer was checked on frames from the test, not in play; the free-movement shot rule is untested (only a
+  modified client could send such a shot).
+- **N5** `done` (as chosen 2026-10-25: a virtual private network for now, our own recordings; a relay and rejoining later).
+  Internet play: README instructions for Tailscale/ZeroTier (no code; the lobby's latency pick covers the extra round trip) and
+  port forwarding; not tried over the internet yet. Recordings (`fp_replay.h`, `.fpr`): the setup as the lobby leaves it (map
+  path and CRC, slots, players, random seed, FPS settings), every command of both players with the frame it took effect, the state
+  hash after every frame (~13 bytes a frame). OpenBW's own replays cannot hold this game (standard commands only; the heroes are
+  not made by commands) and its sync layer applies standard commands where we cannot see them, so a two-player game now sends
+  them as one of our messages (`kChanCmd`, `kProtocol` 5) and every command of either player is applied, and recorded, in one
+  place (`Game::apply`). A player leaving or dropping is OpenBW's own command, applied outside that stream: recorded where the
+  other game is seen gone (checked before each command and after each network poll), as that command. Playback
+  (`Game::open_recording`, `fp_play --watch FILE`): the same setup, the recorded commands on their frames, each frame's hash
+  compared ("went its own way at frame N"); 1 / 2 through a player's eyes (their hero, their fog of war), 0 all. Two-player games
+  record into `replays/` by default (`--no-record`, `--record FILE`; single player with `--record FILE`). Found and fixed: OpenBW's
+  lobby `sync()` can leave behind an expired 50 ms timer whose callback writes a local of the finished `sync()` (stack use after
+  return, AddressSanitizer, once over the 50 ms test relay); `NetServer::set_timeout` runs only the latest callback, as its one
+  timer intends (3 clean runs since). `fp_fogtest`'s cost check now times one thread, fastest of 15 alternated runs (another
+  program loading the machine made the multithreaded timing swing 3-9 ms). Tests: `fp_nettest` records sessions 1, 3, 4 and a
+  single-player FPS game and plays each back to its last frame, every frame's hash and the end (kills, deaths, winner) as in the
+  live game; multiplayer `--selftest-input` writes recordings, `--watch FILE --selftest-input` plays them (views switch, to the
+  end, as recorded). Not covered: our own relay, NAT traversal, rejoining after a drop; a recording of a game whose program
+  crashed ends at its last flushed frame (every 240 frames) without the 'e' record (plays as far as it goes).
+
 ## Verification (every milestone)
 - `make test DATA_DIR=... MAP=".../(2)Bottleneck.scm" MOD_DIR=...` (plus `fp_terraintest` from M1).
 - Window self-tests with `SDL_AUDIODRIVER=dummy`: `fp_play --game MAP --fps --weapons MOD_DIR --selftest-input`,
