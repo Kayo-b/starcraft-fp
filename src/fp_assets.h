@@ -4,6 +4,7 @@
 #include "dir_loader.h"
 #include <cstring>
 #include <cctype>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <set>
@@ -75,6 +76,7 @@ struct AnimSprite {
 	struct Frame { int x, y, xoff, yoff, w, h; };
 	std::vector<uint8_t> raw; std::vector<Frame> frames;
 	size_t diffuse = 0, teamcolor_off = 0; int tex_w = 0, tex_h = 0, box_w = 0, box_h = 0; bool ok = false;
+	int tilt10 = 0; // eye-level files (tools/sprite3d/eyelevel_anim.py): the original art's camera tilt, 0.1 deg (u16 @ record+2)
 	int ground = 0; // where the art meets the floor (box rows): the median frame bottom, so a few outlier frames
 	                // (attacks, deaths) dipping lower do not lift every other frame off the floor
 	static unsigned u16(const std::vector<uint8_t>& b, size_t o) { return b[o] | (b[o + 1] << 8); }
@@ -85,7 +87,7 @@ struct AnimSprite {
 		if (raw.size() < H + 12 + 12 || memcmp(raw.data(), "ANIM", 4) != 0) return false;
 		unsigned layers = u16(raw, 8), entries = u16(raw, 10);
 		if (entries != 1 || layers < 1 || layers > 10) return false;
-		unsigned nf = u16(raw, H); box_w = u16(raw, H + 4); box_h = u16(raw, H + 6); uint32_t ft = u32(raw, H + 8);
+		unsigned nf = u16(raw, H); tilt10 = u16(raw, H + 2); box_w = u16(raw, H + 4); box_h = u16(raw, H + 6); uint32_t ft = u32(raw, H + 8);
 		if (nf == 0 || (size_t)ft + (size_t)nf * 16 > raw.size()) return false;
 		size_t dds = u32(raw, H + 12), dsz = u32(raw, H + 16);
 		tex_w = u16(raw, H + 20); tex_h = u16(raw, H + 22);
@@ -236,6 +238,12 @@ public:
 			try { a_vector<uint8_t> buf; files_(buf, bwgame::format("anim/main_%03d.anim", image_id)); sp.load(std::vector<uint8_t>(buf.begin(), buf.end())); } catch (const std::exception&) {}
 			if (!sp.ok) { int a = anim_of(image_id); if (a != image_id) { alias_[image_id] = a; return sprite(a); } missing_.insert(image_id); }
 			it = sprites_.emplace(image_id, std::move(sp)).first;
+			if (!eye_dir_.empty()) { // an eye-level version of the same frames, when there is one
+				std::ifstream f(eye_dir_ + bwgame::format("/main_%03d.anim", image_id), std::ios::binary);
+				AnimSprite e;
+				if (f && e.load(std::vector<uint8_t>(std::istreambuf_iterator<char>(f), {})) && e.frames.size() == it->second.frames.size())
+					eye_.emplace(image_id, std::move(e));
+			}
 		}
 		return it->second.ok ? &it->second : nullptr;
 	}
@@ -258,6 +266,16 @@ public:
 		}
 		return image_id >= 0 && image_id < (int)grp_first_.size() ? grp_first_[image_id] : image_id;
 	}
+	// The image whose anim file draws this image (itself, or the first image with its GRP: anim_of), its sprite loaded.
+	int file_of(int image_id) { sprite(image_id); auto a = alias_.find(image_id); return a != alias_.end() ? a->second : image_id; }
+	// Eye-level sprites (--eyelevel DIR): DIR/main_NNN.anim with the same frames as the original, drawn from near eye level
+	// (tools/sprite3d/eyelevel_anim.py). Set before the first sprite() call.
+	void set_eyelevel_dir(const std::string& dir) { eye_dir_ = dir; }
+	const AnimSprite* eyelevel_cached(int image_id) const {
+		if (auto a = alias_.find(image_id); a != alias_.end()) image_id = a->second;
+		auto it = eye_.find(image_id); return it != eye_.end() ? &it->second : nullptr;
+	}
+	size_t eyelevel_count() const { return eye_.size(); }
 	// The classic SD terrain art for this tileset (loaded once).
 	const SdTiles* sd() {
 		auto it = sd_.find(tileset_);
@@ -302,7 +320,7 @@ public:
 private:
 	dir_loader files_; int tileset_ = 0;
 	std::map<size_t, std::unique_ptr<HdTiles>> tiles_;
-	std::map<int, AnimSprite> sprites_;
+	std::map<int, AnimSprite> sprites_, eye_; std::string eye_dir_;
 	std::map<int, std::unique_ptr<SdTiles>> sd_;
 	std::map<int, std::unique_ptr<CreepEdges>> creep_;
 	NameTable names_; bool names_loaded_ = false; std::set<int> missing_;

@@ -20,6 +20,10 @@ Base: this repo (`main`), OpenBW headers in `../starcraft-data/openbw`, extracte
 6. Commander mode (FPS + simplified RTS) is a new mode, `--commander`, planned in detail once phases 1-2 are accepted.
 7. One branch per milestone off `main`. Each milestone ends runnable, tests green, golden views reviewed, README and this
    file updated, committed and merged to `main`. Nothing is pushed unless asked.
+8. Every feature pushed to the remote also gets a blog post on kayo-b.github.io (the "StarCraft FP #N" series), if it
+   has interesting technical material (the user, 2026-10-26). The repo's `pre-push` hook queues each pushed range in
+   `.git/blog-queue`; Claude Code's hooks (`~/.claude-2/hooks/starcraft-blog.sh`, after a push and at session start)
+   turn the queue into the steps: write the post per the blog's post guide, build-check, publish, clear the queue.
 
 ## Milestones
 Status: `todo`, `doing`, `done`.

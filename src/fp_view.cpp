@@ -10,7 +10,8 @@
 using namespace fp;
 
 struct Args {
-	std::string data, input, out = "out/fp.ppm", topdown, heightmap, models, model; double model_x = -1, model_y = -1, model_yaw = 0, model_scale = 32; int model_owner = 1; bool model_units = false;
+	std::string data, input, out = "out/fp.ppm", topdown, heightmap, models, model, eyelevel; double model_x = -1, model_y = -1, model_yaw = 0, model_scale = 32; int model_owner = 1; bool model_units = false;
+	struct Spawn { int type, x, y, heading, owner; }; std::vector<Spawn> spawns;
 	int frames = 0, unit = -1, spot = -1, w = 640, h = 400, viewer = -1; double zoom = 2; double cam_x = -1, cam_y = -1, heading = 0, pitch = 0; bool replay = false, print_tileset = false; RenderParams rp;
 };
 static void die(const char* m) { std::cerr << m << "\n"; std::exit(2); }
@@ -42,12 +43,14 @@ int main(int argc, char** argv) {
 		else if (k == "--model-scale") a.model_scale = atof(next());
 		else if (k == "--model-owner") a.model_owner = atoi(next());
 		else if (k == "--model-units") a.model_units = true;
+		else if (k == "--eyelevel") a.eyelevel = next();
+		else if (k == "--spawn") { Args::Spawn sp{0, 0, 0, 128, 0}; if (sscanf(next(), "%d,%d,%d,%d,%d", &sp.type, &sp.x, &sp.y, &sp.heading, &sp.owner) < 3) die("--spawn TYPE,X,Y[,HEADING[,OWNER]]"); a.spawns.push_back(sp); }
 		else if (k == "--eye") a.rp.eye_h = atof(next());
 		else if (k == "--level-h") a.rp.level_h = atof(next());
 		else if (k == "--view-dist") a.rp.view_dist = atof(next());
 		else die("unknown option");
 	}
-	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm [--zoom Z]] [--viewer P] [--heightmap F.ppm] [--print-tileset] [--eye PX] [--level-h PX] [--view-dist PX] [--models DIR [--model FILE --model-at X,Y[,YAW] [--model-scale PX] [--model-owner P]] [--model-units]]");
+	if (a.data.empty() || a.input.empty()) die("usage: fp_view --data DIR (--map FILE | --replay FILE) [--frames N] [--unit I | --cam X,Y | --spot K] [--heading DEG] [--pitch PX] [--out F.ppm] [--size WxH] [--topdown F.ppm [--zoom Z]] [--viewer P] [--heightmap F.ppm] [--print-tileset] [--eye PX] [--level-h PX] [--view-dist PX] [--models DIR [--model FILE --model-at X,Y[,YAW] [--model-scale PX] [--model-owner P]] [--model-units]] [--eyelevel DIR] [--spawn TYPE,X,Y[,HEADING 0..255[,OWNER]]]...");
 	try {
 		replay_player player;
 		player.init(dir_loader(a.data));
@@ -58,7 +61,20 @@ int main(int argc, char** argv) {
 			std::cout << "tileset " << gs.tileset_index << " " << tileset_name(gs.tileset_index) << ", map " << gs.map_tile_width << "x" << gs.map_tile_height << " tiles\n";
 			return 0;
 		}
+		for (auto& sp : a.spawns) { // test scenes: units placed by hand (heading 0 = facing north, 64 east, 128 south)
+			auto& fn = player.funcs();
+			unit_t* u = fn.create_unit(fn.get_unit_type((UnitTypes)sp.type), xy{sp.x, sp.y}, sp.owner);
+			if (!u) die("--spawn: could not create the unit");
+			fn.finish_building_unit(u);
+			if (!fn.place_completed_unit(u)) die("--spawn: no room for the unit there");
+			fn.complete_unit(u);
+			fn.set_unit_heading(u, fn.direction_from_index(sp.heading & 255));
+		}
+		if (!a.spawns.empty()) { // one frame, so OpenBW sets what follows a unit's frame (turret offsets on their hulls)
+			if (a.replay) player.next_frame(); else static_cast<game_player&>(player).next_frame();
+		}
 		Assets assets(a.data);
+		if (!a.eyelevel.empty()) assets.set_eyelevel_dir(a.eyelevel);
 		Renderer r(player.st(), player.funcs(), assets, a.w, a.h, a.rp);
 		std::unique_ptr<ModelLibrary> models;
 		if (!a.models.empty()) {
@@ -70,6 +86,8 @@ int main(int argc, char** argv) {
 		}
 		if (a.viewer >= 0) r.set_viewer(a.viewer);
 		r.update_units();
+		if (getenv("FP_PRINT_TURRETS")) for (auto& u : r.units()) if (u.turret_of >= 0) // debug: turret offsets per hull heading
+			std::cout << "turret on unit " << u.turret_of << ": hull heading " << r.units()[u.turret_of].heading << " frame " << r.units()[u.turret_of].frame << " offset " << u.tox << "," << u.toy << " point " << u.ta[0] << "," << u.ta[1] << "," << u.ta[2] << (u.ta_ok ? "" : " (no fit)") << "\n";
 		std::cout << "map " << r.map_w() << "x" << r.map_h() << " px, units " << r.units().size() << "\n";
 		Camera cam; cam.heading = a.heading; cam.pitch = a.pitch; const unit_t* hide = nullptr;
 		if (a.spot >= 0) {

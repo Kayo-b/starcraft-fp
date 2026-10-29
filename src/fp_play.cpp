@@ -11,6 +11,9 @@
 //   --map FILE           load a map with neutral units only
 //   --watch FILE.fpr     watch a recorded game again (--game MAP if the map file has moved since); 1 / 2 see it through a
 //                        player's eyes (their hero, their fog of war), 0 all of it; the replay controls otherwise
+//   --game MAP --inspect one unit standing on a bare map (default a Marine; --inspect-unit ID for another units.dat id),
+//                        the camera circling it to see every side (W/S/wheel distance, A/D or mouse orbit, Space stops
+//                        the circling, Up/Down eye height, L eye-level sprites; no crosshair, marks or orders)
 //
 // Multiplayer options: --latency N|auto (host: frames between a command and its effect, 1..8; default auto, picked from
 //   the round trip measured in the lobby; the joiner takes the host's), --name NAME. Pause, sim speed and restart are off;
@@ -23,11 +26,13 @@
 // Other options: --race R, --enemy R, --res WxH, --window WxH, --fullscreen, --sim-speed X, --start-frame N,
 //   --no-capture, --no-vsync, --view-dist PX, --eye PX, --level-h PX, --selftest-input, --autotest [--screenshot F.ppm],
 //   --models DIR (SC Evo Complete's SCEvo_Assets.SC2Mod/Base.SC2Assets: buildings and minerals as 3D models, fp_models.h),
-//   --model-units (experimental: units with a model too, in its rest pose)
+//   --model-units (experimental: units with a model too, in its rest pose),
+//   --eyelevel DIR (eye-level versions of HD sprites, DIR/main_NNN.anim, used unless the view looks down steeply)
 //
 // Controls (game mode in brackets, FPS mode in braces)
 //   Mouse look; W/A/S/D move (Shift = run); ESC release/capture mouse; Q quit; F12 screenshot (PPM in cwd)
-//   P pause, = / - sim speed, R restart, F free camera, TAB next unit, M cycle 3D models (off / buildings / buildings + units)
+//   P pause, = / - sim speed, R restart, F free camera, TAB next unit, M cycle 3D models (off / buildings / buildings + units),
+//   L eye-level sprites on/off
 //   [LMB select unit under crosshair (Shift adds), RMB order (move/attack/gather/rally), E possess/release the selected unit,
 //    WASD then moves the possessed unit, T train worker, Y train combat unit, B build supply, X stop]
 //   {LMB (hold) fire, RMB move to the crosshair; the camera stays on the hero}
@@ -61,7 +66,7 @@ using Clock = std::chrono::steady_clock;
 
 
 struct Args {
-	std::string data, input, game_map, screenshot, weapons, models; bool replay = true, topdown = false, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false, model_units = false; int fire_rate = 200, range_pct = 200, speed_pct = 90;
+	std::string data, input, game_map, screenshot, weapons, models, eyelevel; bool replay = true, topdown = false, autotest = false, fullscreen = false, no_capture = false, selftest_input = false, fps = false, direct = false, no_vsync = false, model_units = false, inspect = false; int fire_rate = 200, range_pct = 200, speed_pct = 90, inspect_type = 0;
 	int rw = 640, rh = 400, ww = 1280, wh = 800, start_frame = 0; double speed = 1.0;
 	race_t race = race_t::terran, enemy = race_t::protoss;
 	RenderParams rp;
@@ -84,6 +89,9 @@ struct Session {
 	bool watch = false; std::unique_ptr<Fps> watched; // --watch: a recorded game and its FPS layer, which nobody plays
 	ModelLibrary* models = nullptr; // 3D models (kept across restarts: loaded models stay cached)
 	int model_mode = Renderer::kModelsBuildings; // kept across restarts; M cycles it
+	bool inspecting = false; unit_id inspect_id{}; // --inspect: the unit the camera circles
+	unit_t* inspected() { return inspecting && game ? game->fn().get_unit(inspect_id) : nullptr; }
+	bool eyelevel = true;                         // eye-level sprites when loaded (--eyelevel); kept across restarts, L toggles
 	void open(Assets& assets, const Args& a) {
 		r.reset(); player.reset(); fps.reset(); watched.reset(); game.reset(); watch = false;
 		// what playback needs to make the same FPS layer: on, versus, fire rate, range, speed, free movement
@@ -105,8 +113,13 @@ struct Session {
 			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh, a.rp);
 			r->set_viewer(game->owner()); // the other player's units only where yours see them
 		} else if (!a.game_map.empty()) {
-			replay = false; game = std::make_unique<Game>(); game->open(a.data, a.game_map, a.race, a.enemy, 1, a.fps);
+			replay = false; game = std::make_unique<Game>(); game->open(a.data, a.game_map, a.race, a.enemy, 1, a.fps || a.inspect);
 			if (!a.record.empty() && !game->record(a.record, settings(false))) std::cerr << "cannot write the recording " << a.record << "\n";
+			if (a.inspect) { // one unit on the owner's start location (bare map: no bases, nobody to fight), facing south
+				inspecting = true; unit_t* u = game->spawn((UnitTypes)a.inspect_type, game->start_location(game->owner()), game->owner());
+				if (!u) error("--inspect: could not place unit type %d on the start location", a.inspect_type);
+				game->fn().set_unit_heading(u, game->fn().direction_from_index(128)); inspect_id = game->fn().get_unit_id(u);
+			}
 			if (a.fps) { fps = std::make_unique<Fps>(*game, 7, a.fire_rate, a.range_pct, a.speed_pct, a.direct); if (!fps->start()) error("FPS mode: the map has no usable start location"); }
 			r = std::make_unique<Renderer>(game->st(), game->fn(), assets, a.rw, a.rh, a.rp);
 		} else {
@@ -116,6 +129,7 @@ struct Session {
 			for (int i = 0; i < a.start_frame && !done(); ++i) step();
 		}
 		if (models) { r->set_models(models); r->set_model_mode(model_mode); }
+		r->set_eyelevel(eyelevel);
 		r->update_units();
 	}
 	bool live() const { return game != nullptr && !watch; }
@@ -364,6 +378,9 @@ int main(int argc, char** argv) {
 		else if (k == "--view-dist") a.rp.view_dist = atof(next());
 		else if (k == "--models") a.models = next();
 		else if (k == "--model-units") a.model_units = true;
+		else if (k == "--eyelevel") a.eyelevel = next();
+		else if (k == "--inspect") a.inspect = true;
+		else if (k == "--inspect-unit") { a.inspect = true; a.inspect_type = atoi(next()); }
 		else if (k == "--eye") a.rp.eye_h = atof(next());
 		else if (k == "--level-h") a.rp.level_h = atof(next());
 		else if (k == "--host") { a.net = true; a.netopt.host = true; // optional port
@@ -380,6 +397,8 @@ int main(int argc, char** argv) {
 	}
 	if (!a.watch.empty() && (a.net || a.autotest || a.fps || !a.input.empty())) die("--watch plays a recording: no --host/--join, --fps, --replay/--map or --autotest with it (--game MAP only names where the map is)");
 	if (a.fps && a.game_map.empty()) die("--fps needs --game MAP");
+	if (a.inspect && (a.game_map.empty() || a.fps)) die("--inspect needs --game MAP, and is a mode of its own (not with --fps)");
+	if (a.inspect_type < 0 || a.inspect_type >= 228) die("--inspect-unit: a units.dat id 0..227 (0 = Marine)");
 	if (a.fire_rate < 10 || a.fire_rate > 1000) die("--fire-rate must be 10..1000 (percent of the StarCraft fire rate)");
 	if (a.range_pct < 10 || a.range_pct > 1000) die("--range must be 10..1000 (percent of the StarCraft weapon range)");
 	if (a.speed_pct < 10 || a.speed_pct > 1000) die("--speed must be 10..1000 (percent of the StarCraft movement speed)");
@@ -388,15 +407,17 @@ int main(int argc, char** argv) {
 	if (a.net) {
 		if (a.game_map.empty()) die("--host / --join need --game MAP (the same map file on both computers)");
 		if (a.autotest) die("--autotest is single player only");
+		if (a.inspect) die("--inspect is single player only");
 		if (a.netopt.latency < 0 || a.netopt.latency > 8) die("--latency must be 1..8 frames or auto");
 		if (!a.netopt.host && latency_given) { std::cout << "note: the host picks the latency; --latency is ignored when joining" << std::endl; a.netopt.latency = 0; }
 		if (a.netopt.port < 1 || a.netopt.port > 65535 || a.netopt.address.empty()) die("--host [PORT] / --join HOST[:PORT]: port 1..65535");
 		a.fps = true; a.speed = 1.0; a.netopt.wait_seconds = a.netopt.host ? 0 : 60; // the host waits for a player; a joiner retries for a minute
 		if (a.netopt.name == "player") if (const char* u = getenv("USER")) if (*u) a.netopt.name = u;
 	}
-	if (a.data.empty() || (a.input.empty() && a.game_map.empty() && a.watch.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [(--host [PORT] [--latency N|auto] | --join HOST[:PORT]) [--name NAME] [--no-record]] [--record FILE.fpr] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --map FILE | --watch FILE.fpr [--game MAP]) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--topdown] [--selftest-input] [--autotest [--screenshot F.ppm]]");
+	if (a.data.empty() || (a.input.empty() && a.game_map.empty() && a.watch.empty())) die("usage: fp_play --data DIR (--replay FILE | --game MAP [--race R] [--enemy R] [(--host [PORT] [--latency N|auto] | --join HOST[:PORT]) [--name NAME] [--no-record]] [--record FILE.fpr] [--fps [--weapons MOD_DIR] [--fps-move-shoot] [--fire-rate N] [--range N] [--speed N]] | --game MAP --inspect [--inspect-unit ID] | --map FILE | --watch FILE.fpr [--game MAP]) [--res WxH] [--window WxH] [--sim-speed X] [--start-frame N] [--fullscreen] [--no-capture] [--no-vsync] [--view-dist PX] [--eye PX] [--level-h PX] [--models DIR [--model-units]] [--eyelevel DIR] [--topdown] [--selftest-input] [--autotest [--screenshot F.ppm]]");
 	try {
 		Assets assets(a.data);
+		if (!a.eyelevel.empty()) assets.set_eyelevel_dir(a.eyelevel);
 		std::unique_ptr<ModelLibrary> models;
 		if (!a.models.empty()) { models = std::make_unique<ModelLibrary>(a.models); if (!models->ok()) die("--models: no files under that directory"); }
 		Session s; s.models = models.get(); s.model_mode = a.model_units ? Renderer::kModelsUnits : Renderer::kModelsBuildings; s.open(assets, a);
@@ -424,6 +445,7 @@ int main(int argc, char** argv) {
 		auto owner_workers = [&](const UnitView& u) { return s.live() && u.owner == s.game->owner() && (u.type == (int)UnitTypes::Terran_SCV || u.type == (int)UnitTypes::Protoss_Probe || u.type == (int)UnitTypes::Zerg_Drone); };
 		auto begin_game_view = [&]() { // live mode: possess the first worker (FPS: the hero), facing the map centre
 			if (!s.live()) return;
+			if (s.inspecting) { v.follow = nullptr; v.cam.heading = 270; v.cam.pitch = 0; return; } // inspect: the orbit places the camera
 			if (s.fps) { unit_t* h = s.fps->player(); if (h) { v.follow = h; s.game->select(h); v.cam.x = h->sprite->position.x; v.cam.y = h->sprite->position.y;
 				xy e = s.game->start_location(s.game->enemy()); v.cam.heading = std::atan2(e.y - v.cam.y, e.x - v.cam.x) * 180.0 / 3.14159265358979323846; } return; }
 			for (auto& u : s.r->units()) if (owner_workers(u)) { v.follow = u.ptr; s.game->select(const_cast<unit_t*>(u.ptr)); v.cam.x = u.x; v.cam.y = u.y;
@@ -437,6 +459,7 @@ int main(int argc, char** argv) {
 		const double sim_dt = 1.0 / 23.81; // frames per second at "fastest" game speed
 		auto last = Clock::now(); int shots = 0;
 		Pick pick; Overlay ov; bool moving = false; int last_move_order = -100;
+		double orb_dist = 56; bool orb_auto = true; const double kOrbitDegPerSec = 24; // --inspect: camera distance, circling on/off
 		bool firing = false, fire_ready = false, enemy_aimed = false; int last_shots = 0, last_hp = -1, pain_plays = 0, death_plays = 0; double flash = 0, pain_cd = 0; bool dead_seen = false;
 		// Multiplayer: commanding the base (free camera, game-mode controls) instead of playing the hero; when to say that
 		// this game waits for the other player's; the hero last followed (a respawned hero is a new unit).
@@ -529,7 +552,8 @@ int main(int argc, char** argv) {
 		};
 
 		if (a.topdown) { if (s.fps) set_commander(true); else set_topdown(true); }
-		SelfTest st; bool live_test = a.selftest_input && s.live() && !s.fps, fps_test = a.selftest_input && s.fps && !s.net(), net_test = a.selftest_input && s.net(), watch_test = a.selftest_input && s.watch;
+		SelfTest st; bool live_test = a.selftest_input && s.live() && !s.fps && !s.inspecting, fps_test = a.selftest_input && s.fps && !s.net(), net_test = a.selftest_input && s.net(), watch_test = a.selftest_input && s.watch;
+		bool inspect_test = a.selftest_input && s.inspecting;
 
 		// ---- scripted selftest plans ----
 		// --screenshot: frames of the view shown at named steps
@@ -654,6 +678,33 @@ int main(int argc, char** argv) {
 			K(18.1, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
 		}
 
+		if (inspect_test) { // inspect plan: the camera circles a unit that stands still; Space, W, L through real input events
+			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
+			static double h0, ux0, uy0, d0, eye0;
+			auto dist = [&] { // (copied into the steps: this block ends before they run)
+				 unit_t* u = s.inspected(); return u ? std::hypot(v.cam.x - u->sprite->position.x, v.cam.y - u->sprite->position.y) : -1.0; };
+			K(0.3, "note start", [&, dist] { unit_t* u = s.inspected(); st.check("the unit to inspect is there", u != nullptr); if (!u) return;
+				h0 = v.cam.heading; ux0 = u->sprite->position.x; uy0 = u->sprite->position.y;
+				st.check("the camera is at the orbit distance (" + std::to_string((int)dist()) + " px)", std::abs(dist() - orb_dist) < 2); });
+			K(0.4, "screenshot", [&] { shot("_inspect_a"); });
+			K(1.5, "check circling", [&] { shot("_inspect_b"); unit_t* u = s.inspected(); double turned = std::fmod(v.cam.heading - h0 + 360, 360);
+				st.check("the camera circles the unit (" + std::to_string((int)turned) + " deg in 1.2 s)", turned > 10 && turned < 60);
+				st.check("the unit stands still", u && u->sprite->position.x == ux0 && u->sprite->position.y == uy0); });
+			K(1.6, "Space", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_SPACE, SDLK_SPACE); });
+			K(1.8, "note heading", [&] { h0 = v.cam.heading; });
+			K(2.6, "check stopped", [&, dist] { st.check("Space stops the circling", std::abs(v.cam.heading - h0) < 0.5); d0 = dist(); });
+			K(2.7, "W down", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_W, SDLK_w); });
+			K(3.2, "W up", [&] { push_key(SDL_KEYUP, SDL_SCANCODE_W, SDLK_w); });
+			K(3.3, "check closer", [&, dist] { st.check("W moves the camera closer (" + std::to_string((int)d0) + " -> " + std::to_string((int)dist()) + " px)", dist() < d0 - 3); eye0 = a.rp.eye_h; });
+			K(3.4, "Up down", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_UP, SDLK_UP); });
+			K(3.9, "Up up", [&] { push_key(SDL_KEYUP, SDL_SCANCODE_UP, SDLK_UP); });
+			K(4.0, "check eye", [&] { st.check("Up raises the eye (" + std::to_string((int)eye0) + " -> " + std::to_string((int)a.rp.eye_h) + " px)", a.rp.eye_h > eye0 + 5 && s.r->params().eye_h == a.rp.eye_h); });
+			static bool eye_before;
+			K(4.1, "L", [&] { eye_before = s.r->eyelevel(); push_key(SDL_KEYDOWN, SDL_SCANCODE_L, SDLK_l); });
+			K(4.3, "check L", [&] { if (assets.eyelevel_count()) st.check("L toggles the eye-level sprites", s.r->eyelevel() != eye_before);
+			                         else st.check("L without eye-level sprites says so", cmd.msg.find("No eye-level") != std::string::npos); });
+			K(4.5, "quit", [&] { push_key(SDL_KEYDOWN, SDL_SCANCODE_Q, SDLK_q); });
+		}
 		if (fps_test) { // FPS plan: aim, hold fire, feedback (animation, sound, pain), death and restart, all through real input events
 			speed = 4.0;
 			auto K = [&](double t, const char* w, std::function<void()> f) { st.plan.push_back({t, w, f}); };
@@ -766,12 +817,13 @@ int main(int argc, char** argv) {
 				if (e.type == SDL_QUIT) run = false;
 				else if (topdown && (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP || e.type == SDL_MOUSEWHEEL)) td_mouse(e);
 				else if (e.type == SDL_MOUSEMOTION && input_ok) { v.cam.heading = std::fmod(v.cam.heading + e.motion.xrel * 0.15 + 360.0, 360.0); v.cam.pitch = std::max(-kMaxPitch * a.rh, std::min(kMaxPitch * a.rh, v.cam.pitch - e.motion.yrel * 0.8)); }
+				else if (e.type == SDL_MOUSEWHEEL && s.inspecting) { orb_dist = std::max(20.0, std::min(600.0, orb_dist * std::pow(0.88, e.wheel.y))); }
 				else if (e.type == SDL_MOUSEBUTTONUP && s.fps && e.button.button == SDL_BUTTON_LEFT) { firing = false; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && !commander && e.button.button == SDL_BUTTON_LEFT) { firing = true; }
 				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.fps && s.fps->direct() && !commander && e.button.button == SDL_BUTTON_RIGHT) {
 					if (pick.ground) s.fps->go_to(pick.gx, pick.gy); else cmd.say("Aim at the floor");
 				}
-				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.live()) {
+				else if (e.type == SDL_MOUSEBUTTONDOWN && input_ok && s.live() && !s.inspecting) {
 					Game& G = *s.game; bool shift = SDL_GetModState() & KMOD_SHIFT;
 					if (e.button.button == SDL_BUTTON_LEFT) {
 						if (pick.unit) { unit_t* u = const_cast<unit_t*>(pick.unit); if (shift && cmd.own(u)) G.select_add(u); else G.select(u); }
@@ -806,6 +858,10 @@ int main(int argc, char** argv) {
 							static const char* names[3] = {"Models: off (sprites only)", "Models: buildings and minerals", "Models: buildings and units (experimental, not animated)"};
 							s.model_mode = (s.model_mode + 1) % 3; s.r->set_model_mode(s.model_mode); s.r->update_units(acc / sim_dt, 0); cmd.say(names[s.model_mode]);
 						} else cmd.say("No models loaded (run with --models DIR)"); break;
+						case SDLK_SPACE: if (s.inspecting) { orb_auto = !orb_auto; cmd.say(orb_auto ? "Circling" : "Circling stopped (A/D or the mouse turn around it)"); } break;
+						case SDLK_l: if (assets.eyelevel_count()) { s.eyelevel = !s.eyelevel; s.r->set_eyelevel(s.eyelevel);
+							cmd.say(s.eyelevel ? "Eye-level sprites: on" : "Eye-level sprites: off (original art)"); }
+							else cmd.say("No eye-level sprites loaded (run with --eyelevel DIR)"); break;
 						case SDLK_e: if (s.live() && topdown) { // into the selected unit, in first person
 								unit_t* sel = s.game->selected();
 								if (sel && cmd.own(sel)) { if (s.fps && commander) td_commanding = false; set_topdown(false); v.follow = sel; cmd.say("Possessing " + cmd.name(sel)); }
@@ -864,6 +920,16 @@ int main(int argc, char** argv) {
 				if (!a.selftest_input && SDL_GetMouseFocus() == win) { int mx, my, ww, wh; SDL_GetMouseState(&mx, &my); SDL_GetWindowSize(win, &ww, &wh); ex += (mx >= ww - 3) - (mx <= 2); ey += (my >= wh - 3) - (my <= 2); }
 				if (ex || ey) { v.follow = nullptr; tv.x += std::max(-1.0, std::min(1.0, ex)) * step; tv.y += std::max(-1.0, std::min(1.0, ey)) * step; }
 				moving = false;
+			} else if (s.inspecting) { // the camera circles the unit, looking at it: the mouse or A/D turn around it, W/S closer/farther
+				const double PI = 3.14159265358979323846;
+				double turn = (orb_auto ? kOrbitDegPerSec : 0) + ((keys[SDL_SCANCODE_A] ? 1 : 0) - (keys[SDL_SCANCODE_D] ? 1 : 0)) * 70.0 * run_mul;
+				v.cam.heading = std::fmod(v.cam.heading + turn * dt + 360.0, 360.0);
+				orb_dist = std::max(20.0, std::min(600.0, orb_dist * std::pow(1.8, ((keys[SDL_SCANCODE_S] ? 1 : 0) - (keys[SDL_SCANCODE_W] ? 1 : 0)) * dt * run_mul)));
+				double de = ((keys[SDL_SCANCODE_UP] ? 1 : 0) - (keys[SDL_SCANCODE_DOWN] ? 1 : 0)) * 40.0 * dt * run_mul;
+				if (de) { a.rp.eye_h = std::max(2.0, std::min(400.0, a.rp.eye_h + de)); s.r->set_eye_h(a.rp.eye_h); }
+				if (unit_t* iu = s.inspected()) { double h = v.cam.heading * PI / 180;
+					v.cam.x = iu->sprite->position.x - std::cos(h) * orb_dist; v.cam.y = iu->sprite->position.y - std::sin(h) * orb_dist; }
+				v.follow = nullptr; moving = false;
 			} else if (s.fps && s.fps->direct() && !commander && !v.follow) s.fps->drive(0, 0); // no hero: no input left over for the next one
 			else if (s.fps && s.fps->direct() && !commander && v.follow) { // direct mode: walking input (sent before the next step), walk and shoot at once, no orders
 				const double PI = 3.14159265358979323846, h = v.cam.heading * PI / 180;
@@ -889,6 +955,7 @@ int main(int argc, char** argv) {
 			// overlay: selection and hover
 			ov.selected.clear(); ov.hover = pick.unit;
 			if (s.live()) for (unit_t* u : s.game->selection()) ov.selected.push_back(u);
+			if (s.inspecting) { ov.selected.clear(); ov.hover = nullptr; ov.crosshair = 0; } // nothing drawn over the unit
 			// render
 			auto t0 = Clock::now();
 			if (topdown) { // what the mouse is on stands in for the crosshair's pick
@@ -924,6 +991,17 @@ int main(int argc, char** argv) {
 					double f = std::max(0.0, std::min(1.0, (double)hp / mx)); SDL_SetRenderDrawColor(ren, f > 0.5 ? 60 : 220, f > 0.5 ? 200 : f > 0.25 ? 170 : 40, 40, 255); SDL_Rect fg{bx, by, (int)(bw * f), bh}; SDL_RenderFillRect(ren, &fg);
 					hud.text(bx, by - lh, bwgame::format("HP %d / %d", hp, mx), white);
 					if (!F.alive()) { hud.text(dst.x + dst.w / 2 - 110, dst.y + dst.h / 2 - lh, "YOU DIED", SDL_Color{255, 90, 90, 255}); hud.text(dst.x + dst.w / 2 - 130, dst.y + dst.h / 2 + 4, s.net() ? std::string(bwgame::format("Back in %d s", (F.respawn_in() + 23) / 24)) : std::string("Press R to restart"), white, true); }
+				} else if (s.inspecting) {
+					unit_t* iu = s.inspected(); std::string line = "Inspect: unit gone (R puts it back)";
+					if (iu) {
+						const Terrain& T = s.r->terrain();
+						double rise = a.rp.eye_h + T.floor_height(v.cam.x, v.cam.y) - T.floor_height(iu->sprite->position.x, iu->sprite->position.y) - Renderer::kEyeLevelMid;
+						double down = std::atan2(rise, orb_dist) * 180 / 3.14159265358979323846;
+						bool eye = s.r->eyelevel() && assets.eyelevel_cached((int)iu->sprite->main_image->image_type->id) && down < Renderer::kEyeLevelMaxDeg;
+						line = bwgame::format("Inspect: %s   distance %.0f px   eye %.0f px   looking %.0f deg down: %s%s", cmd.name(iu).c_str(), orb_dist, a.rp.eye_h, down,
+						                      eye ? "eye-level frames" : "original art", orb_auto ? "" : "   (circling stopped)");
+					}
+					hud.text(dst.x + pad, dst.y + pad, line, yellow);
 				} else if (s.live()) {
 					Game& G = *s.game;
 					hud.text(dst.x + pad, dst.y + pad, bwgame::format("Minerals %d    Gas %d    Supply %d/%d", G.minerals(), G.gas(), G.supply_used(), G.supply_available()), yellow);
@@ -949,7 +1027,7 @@ int main(int argc, char** argv) {
 					if (!big.empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3, big, SDL_Color{255, 220, 80, 255});
 					if (!line.empty()) hud.text_center(dst.x + dst.w / 2, dst.y + dst.h / 3 + lh + 4, line, white);
 				}
-				if (pick.unit) { // what the crosshair (top-down: the mouse) is on
+				if (pick.unit && !s.inspecting) { // what the crosshair (top-down: the mouse) is on
 					const unit_t* u = pick.unit; const char* rel = s.live() ? (u->owner == s.game->owner() ? "yours" : u->owner == s.game->enemy() ? "enemy" : "neutral") : "";
 					int tx = dst.x + dst.w / 2, ty = dst.y + dst.h / 2 + 16;
 					if (topdown) { tx = dst.x + (int)(mouse_x * dst.w / td->width()) + 18; ty = dst.y + (int)(mouse_y * dst.h / td->height()) + 18; }
@@ -959,7 +1037,7 @@ int main(int argc, char** argv) {
 				hud.text(dst.x + dst.w - pad, dst.y + pad, s.net() ? std::string(bwgame::format("%.0f fps  latency %d", fps, s.game->latency())) + (s.game->rtt_ms() > 0 ? bwgame::format("  ping %.0f ms", s.game->rtt_ms()).c_str() : "") : std::string(bwgame::format("%.0f fps  x%.3g%s%s", fps, speed, paused ? "  PAUSED" : "", s.done() ? "  END" : "")), grey, true, true);
 				if (topdown) hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, std::string(s.live() ? "LMB select (drag: box)  RMB order  T worker  Y combat  B supply at the mouse  X stop  E into the unit" : s.watch ? "LMB follow a unit  1 / 2 a player's eyes  0 all  P pause  =/- speed" : "LMB follow a unit  TAB next  F free  P pause  =/- speed  R restart")
 					+ "  WASD/edge scroll  wheel zoom  V first person" + (s.fps ? "  F your hero" : ""), grey, true, true);
-				else hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, (std::string(s.net() ? (commander ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F back to your hero" : "WASD move  Mouse aim  LMB (hold) fire  RMB move here  F command your base") : s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause  V from above" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : s.watch ? "1 / 2 a player's eyes  0 all  TAB follow  F free  P pause  =/- speed  R restart" : "TAB follow  F free  P pause  =/- speed  R restart") + (s.models ? "  M models" : "") + (s.fps ? "" : "  V top-down")), grey, true, true);
+				else hud.text(dst.x + dst.w - pad, dst.y + dst.h - pad - sl, (std::string(s.net() ? (commander ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F back to your hero" : "WASD move  Mouse aim  LMB (hold) fire  RMB move here  F command your base") : s.fps ? "WASD move  Mouse aim  LMB (hold) fire  RMB move here  R restart  P pause  V from above" : s.inspecting ? "Mouse/A/D turn around  W/S/wheel distance  Space circling  Up/Down eye  R reset" : s.live() ? "LMB select  RMB order  E possess  T worker  Y combat  B supply  X stop  F free  P pause" : s.watch ? "1 / 2 a player's eyes  0 all  TAB follow  F free  P pause  =/- speed  R restart" : "TAB follow  F free  P pause  =/- speed  R restart") + (s.models ? "  M models" : "") + (assets.eyelevel_count() ? "  L eye-level" : "") + (s.fps ? "" : "  V top-down")), grey, true, true);
 			}
 			SDL_RenderPresent(ren);
 			if (a.no_vsync) { // soft cap around 240 fps so the uncapped path does not burn the CPU

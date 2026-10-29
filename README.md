@@ -15,6 +15,7 @@ Status: **prototype v0.4**. First-person view over OpenBW state with Remastered 
     ./run.sh --fps --fps-move-shoot   # FPS wave mode with free FPS-style movement: walk and shoot at the same time
     ./run.sh --game MAP               # live RTS-style sandbox: possess a unit, give orders
     ./run.sh --host / --join HOST     # 1v1 over the network: a hero and a base each (see Multiplayer below)
+    ./run.sh --inspect                # one Marine standing on GAME_MAP, the camera circling it (--inspect-unit ID: another unit)
     ./run.sh --replay FILE            # another replay;  --map FILE loads a map with neutral units only
     ./run.sh --topdown                # start in the top-down view (V switches between it and first person, in every mode)
 
@@ -37,8 +38,8 @@ meanwhile; you can order it around there), F goes back into it.
 - **Shooting**: mouse aims, hold LMB to fire at the enemy under the crosshair (small aim assist; no shooting through walls). The hero
   only fires while the trigger is held (StarCraft units normally auto-attack). Crosshair: green = enemy in weapon range, red = enemy
   out of range; firing out of range still shoots and always misses (with a bullet-impact sound from the mod).
-- **Enemies**: melee units first (Zealots vs Protoss, Firebats vs Terran, Zerglings vs Zerg; 2 per wave, growing to 6), ranged ones
-  (Dragoons, Marines, Hydralisks) join from wave 3 (up to 3). A wave spawns 420-760 px away, reachable and spread out, once the previous
+- **Enemies**: melee units first (Zealots vs Protoss, Zerglings vs Zerg; 2 per wave, growing to 6), ranged ones
+  (Dragoons, Hydralisks) join from wave 3 (up to 3). Against Terran it is the other way round: Marines from wave 1, Firebats join from wave 3. A wave spawns 420-760 px away, reachable and spread out, once the previous
   one is cleared and at least 8 s have passed. The AI is our own and simple (OpenBW has none): every enemy keeps attacking the hero.
 - **HUD**: wave, kills and enemies alive; HP bar; name/owner/HP of the unit under the crosshair; red flash when hit. R restarts (also
   after "YOU DIED").
@@ -112,6 +113,13 @@ state differs (none seen in the tests). About 13 bytes a frame (~400 KB for 20 m
 (checked; `--game MAP` if it has moved) and the same version of this program. The single-player `--selftest-input` changes its game
 outside the command stream (it spawns enemies), so a recording of it does not play back.
 
+### Inspect (`--game MAP --inspect`)
+One unit (a Marine; `--inspect-unit ID` for another units.dat id) stands on your start location on a bare map, and the camera circles
+it so you can see it from every side: for looking at its art (L switches the eye-level sprites on and off, M the 3D models).
+Mouse or A/D turn around it, W/S or the wheel move closer or farther (Shift faster), Space stops or restarts the circling, Up/Down raise
+or lower the eye (above 18 degrees looking down the original art comes back). No crosshair, marks or orders. The top line shows the
+distance, the eye height, how steeply you look down and which art is drawn. R puts the unit back.
+
 ### Replay and game sandbox
 - **Replay** (`--replay FILE [--start-frame N]`): watch from inside the world; no orders.
 - **Game sandbox** (`--game MAP`): you are one player, a second base sits idle (OpenBW has no AI). You start possessing a worker.
@@ -137,7 +145,7 @@ shimmer). 1280x800 by default (twice `--res`: the HD art has 4 texels per map pi
 - Creep edges need `TileSet/<tileset>.dds.grp` in the data directory (see External assets); without it creep has straight edges.
 
 ### Common controls and options
-- Mouse look (about 64 degrees up and down, enough to aim down a cliff or up at its edge); WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; V top-down view; M cycle 3D models; P pause; `=`/`-` sim speed
+- Mouse look (about 64 degrees up and down, enough to aim down a cliff or up at its edge); WASD moves the free camera (Shift = 3x speed); F free camera; TAB follow the next unit; V top-down view; L eye-level sprites on/off; M cycle 3D models; P pause; `=`/`-` sim speed
   (x0.125..x16); R restart; ESC release/capture the mouse; F12 screenshot (`fp_shot_NNN.ppm` in the working directory); Q quit.
 - `--race R` / `--enemy R` (terran, protoss, zerg; default terran vs protoss), `--res WxH` render resolution (default 640x400),
   `--window WxH` (default 1280x800), `--fullscreen`, `--sim-speed X` starting sim speed (0.125..16), `--no-capture` leaves your
@@ -212,6 +220,23 @@ The working plan, with milestones and their status, is [`docs/PLAN.md`](docs/PLA
   buildings and minerals (the default), buildings and units (experimental: Zealot, Dragoon, Marine, Firebat, Zergling, Hydralisk,
   Ultralisk and the FPS heroes in their rest pose, not animated yet; `--model-units` starts there).
   `fp_view --models DIR --model FILE --model-at X,Y,YAW` places any model in a view.
+- Eye-level sprites (`--eyelevel DIR`, `Assets::set_eyelevel_dir`): `DIR/main_NNN.anim` is an eye-level version of an HD
+  sprite with the same frames (made from the sprite's own frames by `tools/sprite3d/eyelevel_anim.py` on the fp-sprite-3d
+  branch: a voxel model per pose drawn at 5 degrees with the frames' own pixels, or each frame redrawn by its own depth,
+  some then repainted by a fine-tuned image model). It replaces the original frames unless
+  the view looks down on the unit by more than 18 degrees (from a cliff), where the original art, drawn from 31 degrees
+  above, is the truer picture. `run.sh` adds `EYELEVEL_DIR` (default `../starcraft-data/eyelevel`) when it exists,
+  `NO_EYELEVEL=1` turns it off, L toggles it while playing. Derived from Blizzard data: never committed. So far: Marine, SCV, Firebat, Medic,
+  Siege Tank (hull and turret), Vulture, Zergling, Overlord, Drone, Hydralisk, Lurker, Probe, Zealot, Dragoon.
+  `fp_view --spawn TYPE,X,Y[,HEADING[,OWNER]]` (repeatable) places units for test views.
+- Turrets (the Siege Tank's, the Goliath's) are units of their own in OpenBW, drawn on their hull: the turret picture's box
+  centre on the hull's box centre plus the turret offset OpenBW gives (the hull frame's turret point), turning on its own.
+  The offset is OpenBW's table entry for the hull frame drawn here (seen from this camera, not from the original's south).
+  With eye-level frames (hull and turret both) it is the hull's turret point in 3D, fitted to the table's 17 directions
+  as the original art's camera saw them (the tilt kept in the hull's eye-level file), seen from 5 degrees: the Siege
+  Tank's sits 13 px behind the hull's centre and 14 up.
+- An image without an HD file of its own is drawn from the file of the first image with the same GRP, names compared
+  ignoring case as on Windows (the Lurker, image 921, is `main_920.anim`; the Command Center, 275, is `main_063.anim`).
 - Terrain: a heightfield of minitiles (8 px, `src/fp_terrain.h`). Walkable cells sit at their StarCraft level (low/mid/high, 112 px apart);
   floors are one continuous surface (heights at cell corners), so ramps are smooth slopes. StarCraft paints a cliff's face onto the
   map as the band between its foot and its top. The drop stands at the walkable edge, so units on top can look down over it: on natural

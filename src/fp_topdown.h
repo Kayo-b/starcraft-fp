@@ -78,6 +78,7 @@ public:
 		if (r.viewer() >= 0) for (int ty = 0; ty < th; ++ty) for (int tx = 0; tx < tw; ++tx) { uint32_t& c = lit[(size_t)ty * tw + tx]; c = scale(c, r.fog_at(tx * 32 + 16, ty * 32 + 16)); }
 		for (int y = 0; y < h; ++y) { const uint32_t* row = &lit[(size_t)std::min(th - 1, (int)(y / k)) * tw]; for (int x = 0; x < w; ++x) put(x0 + x, y0 + y, row[std::min(tw - 1, (int)(x / k))] | 0xFF000000u); }
 		for (const UnitView& u : r.units()) {
+			if (u.turret_of >= 0) continue; // drawn with its hull
 			bool res = u.owner >= 8 && (u.type == (int)UnitTypes::Resource_Mineral_Field || u.type == (int)UnitTypes::Resource_Mineral_Field_Type_2 || u.type == (int)UnitTypes::Resource_Mineral_Field_Type_3 || u.type == (int)UnitTypes::Resource_Vespene_Geyser);
 			if (u.owner >= 8 && !res) continue; // critters and the like
 			double pc[3]; player_rgb(u.owner, pc); uint32_t c = res ? 0xFF50C8F0u : 0xFF000000u | (uint32_t)pc[0] << 16 | (uint32_t)pc[1] << 8 | (uint32_t)pc[2];
@@ -110,7 +111,7 @@ public:
 		}
 		const unit_t* best = nullptr; double bd = 1e9;
 		if (r_) for (const UnitView& un : r_->units()) {
-			if (!un.ptr) continue; double ux, uy; to_screen(view_, un.x, un.y, ux, uy);
+			if (!un.ptr || un.turret_of >= 0) continue; double ux, uy; to_screen(view_, un.x, un.y, ux, uy);
 			double d = std::hypot(ux - sx, uy - sy) - un.r * view_.zoom; if (d < 4 && d < bd) { bd = d; best = un.ptr; }
 		}
 		return best;
@@ -119,7 +120,7 @@ public:
 	std::vector<const unit_t*> units_in(double x0, double y0, double x1, double y1) const {
 		std::vector<const unit_t*> out; if (!r_) return out;
 		if (x0 > x1) std::swap(x0, x1); if (y0 > y1) std::swap(y0, y1);
-		for (const UnitView& un : r_->units()) { if (!un.ptr) continue; double ux, uy; to_screen(view_, un.x, un.y, ux, uy); if (ux >= x0 && ux <= x1 && uy >= y0 && uy <= y1) out.push_back(un.ptr); }
+		for (const UnitView& un : r_->units()) { if (!un.ptr || un.turret_of >= 0) continue; double ux, uy; to_screen(view_, un.x, un.y, ux, uy); if (ux >= x0 && ux <= x1 && uy >= y0 && uy <= y1) out.push_back(un.ptr); }
 		return out;
 	}
 	// Last render(): images drawn (on screen); of them the ones of a given player's sprites, shadows, shimmers (undetected
@@ -266,7 +267,7 @@ private:
 		by_sprite_.assign(4096, -1); unit_sprite_.assign(4096, 0);
 		auto mark = [&](const unit_t* u, int i) { for (int k = 0; u && k < 2; ++k, u = u->subunit) { size_t s = u->sprite->index; if (s < by_sprite_.size()) { unit_sprite_[s] = 1; if (i >= 0) by_sprite_[s] = i; } } };
 		for (auto u : ptr(st_.visible_units)) mark(u, -1);
-		for (size_t i = 0; i < us.size(); ++i) if (us[i].src) mark(us[i].src, (int)i);
+		for (size_t i = 0; i < us.size(); ++i) if (us[i].src && us[i].turret_of < 0) mark(us[i].src, (int)i); // a turret entry: its hull's (and the turret sprite is the hull's subunit)
 		struct S { uint32_t order; size_t n; const sprite_t* sp; int unit; }; std::vector<S> list;
 		const int lines = (int)gs_.map_tile_height, ly0 = std::max(0, (int)std::floor((v.y - H_ / 2.0 / z) / 32) - 8), ly1 = std::min(lines - 1, (int)std::floor((v.y + H_ / 2.0 / z) / 32) + 8);
 		for (int ly = ly0; ly <= ly1; ++ly) for (auto* sp : ptr(st_.sprites_on_tile_line[ly])) {
