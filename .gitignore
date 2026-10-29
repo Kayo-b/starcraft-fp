@@ -6,3 +6,4 @@ node_modules/
 *.png
 mapout/
 replays/
+__pycache__/

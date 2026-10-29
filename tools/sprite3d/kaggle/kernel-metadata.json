@@ -1,0 +1,16 @@
+{
+  "id": "kayo01/sc-sprite3d-trellis",
+  "title": "sc-sprite3d-trellis",
+  "code_file": "trellis_kernel.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": ["kayo01/sc-sprite3d-inputs"],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": [],
+  "machine_shape": "NvidiaTeslaT4"
+}
