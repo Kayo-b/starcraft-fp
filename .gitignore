@@ -5,3 +5,4 @@ node_modules/
 *.ppm
 *.png
 mapout/
+__pycache__/
