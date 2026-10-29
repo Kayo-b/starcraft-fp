@@ -33,7 +33,7 @@ static Outcome fight(const std::string& data, const std::string& map, int max_fr
 			int n = g.count([&](unit_t* u) { return u->owner == g.enemy(); });
 			int zl = g.count([&](unit_t* u) { return u->owner == g.enemy() && u->unit_type->id == UnitTypes::Zerg_Zergling; });
 			int reach = g.count([&](unit_t* u) { return u->owner == g.enemy() && g.fn().is_reachable(p->sprite->position, u->sprite->position); });
-			check(n == Fps::wave_melee(1) + Fps::wave_ranged(1) && zl == n && reach == n, "wave 1 at frame " + std::to_string(g.frame()) + ": " + std::to_string(n) + " enemies, " + std::to_string(zl) + " Zerglings, " + std::to_string(reach) + " reachable from the player"); }
+			check(n == Fps::wave_lead(1) + Fps::wave_extra(1) && zl == n && reach == n, "wave 1 at frame " + std::to_string(g.frame()) + ": " + std::to_string(n) + " enemies, " + std::to_string(zl) + " Zerglings, " + std::to_string(reach) + " reachable from the player"); }
 		if (verbose && wave_checked && !ai_checked && g.frame() % 6 == 0) { ai_checked = true; // one AI pass later
 			int hunting = g.count([&](unit_t* u) { return u->owner == g.enemy() && u->order_target.unit == p && (u->order_type->id == Orders::AttackUnit || u->order_type->id == Orders::AttackMove); });
 			int total = g.count([&](unit_t* u) { return u->owner == g.enemy(); });
@@ -65,6 +65,13 @@ int main(int argc, char** argv) {
 		check(a.kills >= 1, "shooting kills enemies (" + std::to_string(a.kills) + " kills)");
 		check(a.min_hp < 999 && a.min_hp < p0hp, "enemies hurt the player (lowest HP " + std::to_string(a.min_hp) + ")");
 		check(a.sum == b.sum && a.kills == b.kills && a.frames == b.frames, "determinism: two identical fights end the same way");
+		// A Terran enemy leads with Marines from wave 1; Firebats only join from wave 3.
+		{ Game t; t.open(argv[1], argv[2], race_t::terran, race_t::terran, 1, true); Fps ft(t); ft.start();
+		  for (int i = 0; i < 400 && ft.wave < 1; ++i) { t.step(); ft.tick(); }
+		  int marines = t.count([&](unit_t* u) { return u->owner == t.enemy() && u->unit_type->id == UnitTypes::Terran_Marine; });
+		  int firebats = t.count([&](unit_t* u) { return u->owner == t.enemy() && u->unit_type->id == UnitTypes::Terran_Firebat; });
+		  check(ft.wave == 1 && marines == Fps::wave_lead(1) && marines == 2 && firebats == 0,
+		        "Terran wave 1: " + std::to_string(marines) + " Marines and " + std::to_string(firebats) + " Firebats"); }
 		// Duel: one Zergling inside weapon range; fire() must damage it and eventually kill it.
 		{ Game d; d.open(argv[1], argv[2], race_t::terran, race_t::zerg, 1, true); Fps f2(d); f2.start(); unit_t* p = f2.player();
 		  xy at{p->sprite->position.x + 100, p->sprite->position.y}; unit_t* z = d.spawn(UnitTypes::Zerg_Zergling, at, d.enemy());

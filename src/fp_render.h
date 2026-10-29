@@ -28,13 +28,16 @@ struct UnitView {
 	const unit_t* ptr;
 	double hp_frac = 1, shield_frac = 0; // 0..1 of the unit type's maximum; shield_frac is 0 for units without shields
 	const M3Model* model = nullptr; double mscale = 0, myaw = 0; // drawn as this 3D model (px per model unit, yaw) instead of a sprite
+	int turret_of = -1; double tox = 0, toy = 0; // a turret (Siege Tank, Goliath): index of its hull's entry, offset from the hull (px)
+	int itype = -1;                              // images.dat id of the main image (the turret offsets are the hull image's)
+	double ta[3] = {0, 0, 0}; bool ta_ok = false; // turret: its point on the hull in 3D (game px: right, forward, up), see turret_point
 };
 
 // What to highlight on top of the scene.
 struct Overlay {
 	std::vector<const unit_t*> selected;
 	const unit_t* hover = nullptr;
-	uint32_t crosshair = 0xFFFFFFFF; // 0xAARRGGBB
+	uint32_t crosshair = 0xFFFFFFFF; // 0xAARRGGBB; alpha 0: no crosshair
 };
 
 // Result of looking along the crosshair.
@@ -96,18 +99,67 @@ public:
 		return true;
 	}
 
+	// A hull image's turret offset for one of its frames (OpenBW: lo index 2, the first point), false if it has none.
+	bool turret_lo(int itype, int frame, double& x, double& y) const {
+		const auto& all = st_.global->image_lo_offsets;
+		if (itype < 0 || itype >= (int)all.size() || !all[itype][2]) return false;
+		const auto& fr = *all[itype][2];
+		if (frame < 0 || frame >= (int)fr.size() || fr[frame].empty()) return false;
+		x = fr[frame][0].x; y = fr[frame][0].y; return true;
+	}
+	// The turret point in 3D (game px: a[0] right, a[1] forward, a[2] up, the hull facing north), fitted by least squares
+	// to the hull's turret offsets in its 17 drawn directions as the original art's camera (tilted `tilt` degrees) sees
+	// them: x = ax cos h + ay sin h, y = ax sin h sin t - ay cos h sin t - az cos t (h the direction). The Siege Tank's
+	// sits 13 px behind the hull's centre and 14 up, so its offset swings from (0,-19) facing south to (-1,-1) facing north.
+	bool turret_point(int itype, int frame_base, double tilt, double a[3]) const {
+		if (tilt < 5 || tilt > 85) return false;
+		const double PI = 3.14159265358979323846, st = std::sin(tilt * PI / 180), ct = std::cos(tilt * PI / 180);
+		double M[3][3] = {}, b[3] = {}; int n = 0;
+		for (int dir = 0; dir <= 16; ++dir) {
+			double x, y; if (!turret_lo(itype, frame_base + dir, x, y)) continue; ++n;
+			double h = dir * PI / 16, rows[2][3] = {{std::cos(h), std::sin(h), 0}, {std::sin(h) * st, -std::cos(h) * st, -ct}}, val[2] = {x, y};
+			for (int r = 0; r < 2; ++r) for (int i = 0; i < 3; ++i) { b[i] += rows[r][i] * val[r]; for (int j = 0; j < 3; ++j) M[i][j] += rows[r][i] * rows[r][j]; }
+		}
+		if (n < 3) return false;
+		double det = M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+		if (std::abs(det) < 1e-9) return false;
+		for (int k = 0; k < 3; ++k) { double C[3][3]; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) C[i][j] = j == k ? b[i] : M[i][j];
+			a[k] = (C[0][0] * (C[1][1] * C[2][2] - C[1][2] * C[2][1]) - C[0][1] * (C[1][0] * C[2][2] - C[1][2] * C[2][0]) + C[0][2] * (C[1][0] * C[2][1] - C[1][1] * C[2][0])) / det; }
+		return true;
+	}
+	// The image whose HD sprite file (anim/main_NNN.anim) draws this image, loaded: its own, else that of the first image
+	// drawn from the same picture (images.dat's GRP): Remastered has no file of its own for some of those (the Lurker,
+	// image 921, is drawn from main_920; the Command Center, 275, from main_063), while others have their own (shadows).
+	int anim_id(int image) {
+		if (assets_.sprite(image, false)) return image;
+		if (anim_of_.empty()) { // GRP names compared ignoring case, as Windows does (zerg\Zlurker.grp is zerg\zLurker.grp)
+			std::vector<std::string> names; // arr/images.tbl: u16 count, u16 offsets, zero-terminated strings
+			try { a_vector<uint8_t> t; assets_.files()(t, "arr/images.tbl");
+				size_t n = t.size() >= 2 ? (t[0] | (t[1] << 8)) : 0;
+				for (size_t k = 0; k < n && 2 + 2 * k + 1 < t.size(); ++k) { size_t o = t[2 + 2 * k] | (t[3 + 2 * k] << 8); std::string nm;
+					for (; o < t.size() && t[o]; ++o) nm += (char)std::tolower(t[o]); names.push_back(nm); }
+			} catch (const std::exception&) {}
+			const auto& types = st_.global->image_types.vec; anim_of_.resize(types.size()); std::map<std::string, int> first;
+			for (size_t i = 0; i < types.size(); ++i) { int g = types[i].grp_filename_index;
+				std::string key = g >= 1 && g <= (int)names.size() ? names[g - 1] : "#" + std::to_string(g);
+				anim_of_[i] = first.emplace(key, (int)i).first->second; }
+		}
+		int f = image >= 0 && image < (int)anim_of_.size() ? anim_of_[image] : image;
+		if (f != image && assets_.sprite(f, false)) return f;
+		assets_.note_missing(image); return image;
+	}
 	// Snapshot visible units and preload their sprites (must run before render(); render() only reads).
 	void update_units() {
 		units_.clear();
 		for (auto u : ptr(st_.visible_units)) {
 			auto& d = u->unit_type->dimensions; auto* mi = u->sprite->main_image;
 			units_.push_back({(double)u->sprite->position.x, (double)u->sprite->position.y, (d.from.x + d.to.x + 1) / 2.0, (double)(d.from.y + d.to.y + 1),
-				u->owner, (int)u->unit_type->id, (int)mi->image_type->id, (int)mi->frame_index, (mi->flags & image_t::flag_horizontally_flipped) != 0,
+				u->owner, (int)u->unit_type->id, anim_id((int)mi->image_type->id), (int)mi->frame_index, (mi->flags & image_t::flag_horizontally_flipped) != 0,
 				(int)fn_.direction_index(u->heading), (mi->flags & image_t::flag_has_directional_frames) != 0, (int)mi->frame_index_base, u});
+			units_.back().itype = (int)mi->image_type->id;
 			{ auto& b = units_.back(); double mh = u->unit_type->hitpoints.raw_value ? u->unit_type->hitpoints.raw_value / 256.0 : 0, ms = u->unit_type->shield_points;
 			  if (mh > 0) b.hp_frac = std::max(0.0, std::min(1.0, (u->hp.raw_value / 256.0) / mh));
 			  if (u->unit_type->has_shield && ms > 0) b.shield_frac = std::max(0.0, std::min(1.0, (u->shield_points.raw_value / 256.0) / ms)); }
-			assets_.sprite((int)mi->image_type->id);
 			// Finished buildings and mineral fields with a model: scaled so its footprint covers the unit's (by area)
 			if (models_ && model_mode_ >= 1 && fn_.u_completed(u)) {
 				auto& b = units_.back();
@@ -120,6 +172,19 @@ public:
 					b.model = m; b.mscale = kUnitModelScale; b.myaw = fn_.direction_index(u->heading) * (2 * 3.14159265358979323846 / 256) + 3.14159265358979323846;
 				}
 			}
+			// A turret is a unit of its own (subunit) at the hull's position, its picture offset by the hull's turret
+			// point for the hull's current frame (OpenBW: get_image_lo_offset(hull, 2)); it turns on its own.
+			if (u->subunit && fn_.ut_turret(u->subunit) && !units_.back().model) {
+				const unit_t* t = u->subunit; auto* ti = t->sprite->main_image;
+				UnitView tv = units_.back();
+				tv.image = anim_id((int)ti->image_type->id); tv.frame = (int)ti->frame_index; tv.flip = (ti->flags & image_t::flag_horizontally_flipped) != 0;
+				tv.heading = (int)fn_.direction_index(t->heading); tv.directional = (ti->flags & image_t::flag_has_directional_frames) != 0;
+				tv.frame_base = (int)ti->frame_index_base; tv.turret_of = (int)units_.size() - 1; tv.tox = ti->offset.x; tv.toy = ti->offset.y;
+				tv.itype = (int)ti->image_type->id;
+				const UnitView& hv = units_.back();
+				if (const AnimSprite* he = assets_.eyelevel_cached(hv.image)) tv.ta_ok = turret_point(hv.itype, hv.frame_base, he->tilt10 / 10.0, tv.ta);
+				units_.push_back(tv);
+			}
 		}
 	}
 	// 3D models (fp_models.h); without a library every unit is a sprite.
@@ -128,6 +193,13 @@ public:
 	// 0 sprites only, 1 buildings and minerals, 2 also units with a model (experimental: rest pose, no animation yet).
 	enum ModelMode { kModelsOff = 0, kModelsBuildings = 1, kModelsUnits = 2 };
 	void set_model_mode(int mode) { model_mode_ = std::max(0, std::min(2, mode)); }
+	void set_eye_h(double h) { p_.eye_h = h; } // eye above the floor under the camera (px)
+	// Eye-level sprites (Assets::set_eyelevel_dir) on or off; V toggles it while playing.
+	void set_eyelevel(bool on) { eyelevel_ = on; }
+	bool eyelevel() const { return eyelevel_ && assets_.eyelevel_count() > 0; }
+	static constexpr double kEyeLevelMaxDeg = 18; // steeper views down onto a unit use its original frames
+	static constexpr double kEyeLevelMid = 8;     // height on the unit the view angle is measured to (world px)
+	static constexpr double kEyeLevelDeg = 5;        // the height eyelevel_anim.py draws the eye-level frames from
 	int model_mode() const { return models_ ? model_mode_ : 0; }
 	// A model placed in the world independently of the simulation (fp_view's model views): not pickable.
 	void add_static_model(const M3Model* m, double x, double y, double px_per_unit, double yaw_deg, int owner) {
@@ -173,11 +245,12 @@ public:
 			for (auto& t : th) t.join();
 		}
 		if (ov) for (auto& vi : vis) {
-			const UnitView& un = units_[vi.idx]; bool sel = std::find(ov->selected.begin(), ov->selected.end(), un.ptr) != ov->selected.end();
+			const UnitView& un = units_[vi.idx]; if (un.turret_of >= 0) continue; // marked with its hull
+			bool sel = std::find(ov->selected.begin(), ov->selected.end(), un.ptr) != ov->selected.end();
 			if (sel || un.ptr == ov->hover) mark(cam, un, vi.depth, vi.sx, v, fb, sel);
 		}
 		const uint32_t xc = ov ? ov->crosshair : 0xFFFFFFFF;
-		for (int d = -6; d <= 6; ++d) { if (std::abs(d) < 2) continue; fb[(size_t)(H_ / 2) * W_ + W_ / 2 + d] = xc; fb[(size_t)(H_ / 2 + d) * W_ + W_ / 2] = xc; }
+		if (xc >> 24) for (int d = -6; d <= 6; ++d) { if (std::abs(d) < 2) continue; fb[(size_t)(H_ / 2) * W_ + W_ / 2 + d] = xc; fb[(size_t)(H_ / 2 + d) * W_ + W_ / 2] = xc; }
 	}
 
 	// Aim assist: the nearest-to-the-crosshair unit passing `want` whose billboard centre is within max_px of the crosshair
@@ -185,7 +258,7 @@ public:
 	template<typename F> const unit_t* nearest_to_crosshair(const Camera& cam, const unit_t* hide, double max_px, F&& want) const {
 		View v = view(cam); const unit_t* best = nullptr; double bd = max_px;
 		for (auto& vi : visible(cam, hide, v)) {
-			const UnitView& un = units_[vi.idx]; if (!want(un.ptr)) continue;
+			const UnitView& un = units_[vi.idx]; if (un.turret_of >= 0 || !want(un.ptr)) continue;
 			Draw d = geometry(cam, un, vi.depth, vi.sx, v);
 			if (vi.depth > depth_at((int)vi.sx, (d.y0 + d.y1) / 2) && id_at((int)vi.sx, (d.y0 + d.y1) / 2) != vi.idx) continue; // its centre is behind something else
 			double dx = vi.sx - W_ / 2.0, dy = (d.y0 + d.y1) / 2.0 - H_ / 2.0, dist = std::hypot(dx, dy);
@@ -513,6 +586,7 @@ private:
 			double rx = units_[i].x - cam.x, ry = units_[i].y - cam.y;
 			double depth = rx * v.dirx + ry * v.diry, lateral = rx * (-v.diry) + ry * v.dirx;
 			if (depth < 4) continue;
+			if (units_[i].turret_of >= 0) depth -= 1e-3; // a turret draws over its hull
 			vis.push_back({depth, W_ / 2.0 + lateral / depth * v.proj, (int)i});
 		}
 		return vis;
@@ -520,7 +594,13 @@ private:
 	// Screen rectangle and frame of a unit's billboard (shared by drawing, picking and overlays).
 	Draw geometry(const Camera& cam, const UnitView& un, double depth, double sxc, const View& v) const {
 		const double PI = 3.14159265358979323846;
+		const UnitView& hull = un.turret_of >= 0 ? units_[un.turret_of] : un; // a turret goes with its hull
+		// Eye-level frames unless the view looks down on the unit steeply (from a cliff), where the original art, drawn
+		// from 31 degrees above, is the truer picture. A turret is eye-level only with its hull.
+		bool eye = eyelevel_ && assets_.sprite_cached(hull.image) && assets_.eyelevel_cached(hull.image) && (un.turret_of < 0 || assets_.eyelevel_cached(un.image));
+		if (eye) eye = std::atan2(v.eye_h - terrain_.floor_height(un.x, un.y) - kEyeLevelMid, depth) < kEyeLevelMaxDeg * PI / 180;
 		Draw d{}; d.sp = assets_.sprite_cached(un.image); d.frame = un.frame; d.flip = un.flip;
+		if (eye && d.sp) d.sp = assets_.eyelevel_cached(un.image);
 		if (d.sp && un.directional) { // OpenBW direction->frame rule, with heading relative to the camera bearing
 			double bearing = std::atan2(un.x - cam.x, -(un.y - cam.y)) * 256.0 / (2 * PI);
 			int rel = (((un.heading - (int)std::lround(bearing)) % 256) + 256) % 256;
@@ -528,6 +608,8 @@ private:
 			d.frame = un.frame_base + off;
 		}
 		if (d.sp && (d.frame < 0 || d.frame >= (int)d.sp->frames.size())) d.sp = nullptr;
+		const AnimSprite* hs = un.turret_of >= 0 ? (eye ? assets_.eyelevel_cached(hull.image) : assets_.sprite_cached(hull.image)) : nullptr;
+		if (un.turret_of >= 0 && !hs) d.sp = nullptr;
 		double base = v.horizon + (v.eye_h - terrain_.floor_height(un.x, un.y)) * v.proj / depth; // the floor the unit stands on
 		if (d.sp) {
 			// The art stands on the floor at the unit's position: the sprite's median frame bottom is its ground line,
@@ -537,12 +619,33 @@ private:
 			const double sf = 0.25; // HD pixels are 4x SD
 			double cx = (fr.xoff + fr.w / 2.0 - d.sp->box_w / 2.0) * sf; // horizontal anchor offset (world px)
 			double top = (fr.yoff - d.sp->ground) * sf;                  // frame top relative to the ground (negative = above)
+			if (hs) { // a turret: its box centre on the hull's box centre plus the turret offset, as the original composes them,
+				// for the hull frame drawn here (seen from this camera, not from the original's): OpenBW's offset table, or at
+				// eye level the hull's turret point in 3D seen from 5 degrees (turret_point)
+				int hoff = 0; bool hflip = hull.flip; int hframe = hull.frame;
+				if (hull.directional) {
+					double bearing = std::atan2(hull.x - cam.x, -(hull.y - cam.y)) * 256.0 / (2 * PI);
+					int rel = (((hull.heading - (int)std::lround(bearing)) % 256) + 256) % 256;
+					hoff = (rel + 4) / 8; hflip = false; if (hoff > 16) { hoff = 32 - hoff; hflip = true; }
+					hframe = hull.frame_base + hoff;
+				}
+				double ox = un.tox, oy = un.toy;
+				if (eye && un.ta_ok) {
+					double h = hoff * PI / 16, se = std::sin(kEyeLevelDeg * PI / 180), ce = std::cos(kEyeLevelDeg * PI / 180);
+					ox = un.ta[0] * std::cos(h) + un.ta[1] * std::sin(h);
+					oy = un.ta[0] * std::sin(h) * se - un.ta[1] * std::cos(h) * se - un.ta[2] * ce;
+					if (hflip) ox = -ox;
+				} else if (turret_lo(hull.itype, hframe, ox, oy)) { if (hflip) ox = -ox; }
+				cx += ox;
+				top = (hs->box_h / 2.0 - hs->ground) * sf + oy + (fr.yoff - d.sp->box_h / 2.0) * sf;
+			}
 			double bot = top + fr.h * sf;                                // frame bottom relative to ground
 			d.wpx = fr.w * sf * v.proj / depth; d.hpx = fr.h * sf * v.proj / depth;
 			d.x0 = (int)(sxc + cx * v.proj / depth - d.wpx / 2);
 			d.x1 = (int)(sxc + cx * v.proj / depth + d.wpx / 2);
 			d.y0 = (int)(base + top * v.proj / depth);
 			d.y1 = (int)(base + bot * v.proj / depth);
+		} else if (un.turret_of >= 0) { d.x0 = d.x1 = d.y0 = d.y1 = 0; // no picture: nothing
 		} else { d.wpx = un.r * 2 * v.proj / depth; d.hpx = un.hgt * v.proj / depth;
 			d.x0 = (int)(sxc - d.wpx / 2); d.x1 = (int)(sxc + d.wpx / 2); d.y0 = (int)(base - d.hpx); d.y1 = (int)base; }
 		return d;
@@ -570,7 +673,7 @@ private:
 					fb[(size_t)y * W_ + x] = pack(r * shade, g * shade, b * shade);
 				}
 			}
-		} else { // flat fallback in the player colour
+		} else if (un.turret_of < 0) { // flat fallback in the player colour
 			double pc[3]; player_rgb(un.owner, pc); uint32_t c = pack(pc[0], pc[1], pc[2]);
 			for (int x = std::max(xa, d.x0); x <= std::min(xb - 1, d.x1); ++x) for (int y = std::max(0, d.y0); y < std::min(H_, d.y1); ++y) if (depth <= zbuf_[(size_t)y * W_ + x]) fb[(size_t)y * W_ + x] = c;
 		}
@@ -598,7 +701,8 @@ private:
 	Terrain terrain_; int mw_ = 0, mh_ = 0; std::vector<uint8_t> grid_; double avg_[3] = {0, 0, 0};
 	std::vector<UnitView> units_; std::vector<float> zbuf_; // per-pixel depth of the terrain and models (kFar for sky and fog)
 	std::vector<int32_t> idbuf_;                             // per pixel: the units_ index of the model drawn there, -2 static model, -1 none
-	ModelLibrary* models_ = nullptr; int model_mode_ = kModelsBuildings;
+	ModelLibrary* models_ = nullptr; int model_mode_ = kModelsBuildings; bool eyelevel_ = true;
+	std::vector<int> anim_of_; // image id -> the first image id drawn from the same GRP (anim_id)
 	struct StaticModel { const M3Model* m; double x, y, scale, yaw; int owner; };
 	std::vector<StaticModel> statics_;
 	// One screen-space triangle of a model, ready to rasterise: x, y, 1/depth and u/depth, v/depth, light per corner.

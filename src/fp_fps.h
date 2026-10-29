@@ -9,23 +9,26 @@
 namespace fp {
 using namespace bwgame;
 
-struct FpsKinds { UnitTypes player; UnitTypes melee, ranged; };
-// Player unit and enemy roster per race: a ranged player, enemies of the opposing race.
+struct FpsKinds { UnitTypes player; UnitTypes lead, extra; int extra_from; };
+// Player unit and enemy roster per race: a ranged player, enemies of the opposing race. `lead` makes up every wave from
+// the first, `extra` joins from wave `extra_from`: Zealots then Dragoons, Zerglings then Hydralisks, and against Terran
+// Marines from the start (to see them at eye level), Firebats joining later.
 // The player is a hero unit (more HP and damage than the rank and file): a lone StarCraft unit cannot kite, so a plain Marine loses a
 // one-on-one against a Zergling.
 static inline UnitTypes fps_player_unit(race_t r) { return r == race_t::terran ? UnitTypes::Hero_Jim_Raynor_Marine : r == race_t::protoss ? UnitTypes::Hero_Fenix_Dragoon : UnitTypes::Hero_Hunter_Killer; }
 static inline FpsKinds fps_enemy_roster(race_t r) {
-	if (r == race_t::zerg) return {UnitTypes::Zerg_Hydralisk, UnitTypes::Zerg_Zergling, UnitTypes::Zerg_Hydralisk};
-	if (r == race_t::terran) return {UnitTypes::Terran_Marine, UnitTypes::Terran_Firebat, UnitTypes::Terran_Marine};
-	return {UnitTypes::Protoss_Dragoon, UnitTypes::Protoss_Zealot, UnitTypes::Protoss_Dragoon};
+	if (r == race_t::zerg) return {UnitTypes::Zerg_Hydralisk, UnitTypes::Zerg_Zergling, UnitTypes::Zerg_Hydralisk, 3};
+	if (r == race_t::terran) return {UnitTypes::Terran_Marine, UnitTypes::Terran_Marine, UnitTypes::Terran_Firebat, 3};
+	return {UnitTypes::Protoss_Dragoon, UnitTypes::Protoss_Zealot, UnitTypes::Protoss_Dragoon, 3};
 }
 
 class Fps {
 public:
 	int kills = 0, wave = 0, shots = 0, misses = 0; // shots/misses: attacks the player has started (counted in fire())
-	// Enemies in wave w: melee from the start, ranged attackers join from wave 2. Capped and growing slowly so a lone hero stays winnable.
-	static int wave_melee(int w) { return std::min(6, 1 + (w + 1) / 2); }
-	static int wave_ranged(int w) { return w < 2 ? 0 : std::min(3, (w - 1) / 2); }
+	// Enemies in wave w: the roster's lead unit from the start, its extra unit from wave `from` (extra_from).
+	// Capped and growing slowly so a lone hero stays winnable.
+	static int wave_lead(int w) { return std::min(6, 1 + (w + 1) / 2); }
+	static int wave_extra(int w, int from = 3) { return w < from ? 0 : std::min(3, 1 + (w - from) / 2); }
 	// fire_rate_percent / range_percent / speed_percent: hero weapon and movement tuning relative to the StarCraft data
 	// (100 = unchanged). Weapon entries and the hero's flingy are unique to the hero (or unused by anyone else on an FPS
 	// map), so mutating the loaded data only affects the hero.
@@ -174,21 +177,21 @@ public:
 
 private:
 	void spawn_wave(unit_t* p) {
-		++wave; int melee = wave_melee(wave), ranged = wave_ranged(wave); xy pp = p->sprite->position;
+		++wave; int lead = wave_lead(wave), extra = wave_extra(wave, roster_.extra_from); xy pp = p->sprite->position;
 		std::uniform_real_distribution<double> ang(0, 6.283185307179586), dist(420, 760);
 		std::vector<xy> placed; // keep spawns apart so enemies do not clump into one ball
-		int made_melee = 0, made_ranged = 0;
-		for (int tries = 0; (made_melee < melee || made_ranged < ranged) && tries < 600; ++tries) {
+		int made_lead = 0, made_extra = 0;
+		for (int tries = 0; (made_lead < lead || made_extra < extra) && tries < 600; ++tries) {
 			double a = ang(rng_), d = dist(rng_); xy pos{(int)(pp.x + std::cos(a) * d), (int)(pp.y + std::sin(a) * d)};
 			if (pos.x < 32 || pos.y < 32 || pos.x >= (int)g_.st().game->map_width - 32 || pos.y >= (int)g_.st().game->map_height - 32) continue;
 			if (!g_.fn().is_walkable(pos) || !g_.fn().is_reachable(pp, pos)) continue;
 			bool too_close = false; for (auto& q : placed) if (std::hypot(q.x - pos.x, q.y - pos.y) < 72) { too_close = true; break; }
 			if (too_close) continue;
-			bool want_ranged = made_melee >= melee || (made_ranged < ranged && made_melee * 3 > melee * 2); // sprinkle ranged through the wave
-			UnitTypes t = want_ranged ? roster_.ranged : roster_.melee;
+			bool want_extra = made_lead >= lead || (made_extra < extra && made_lead * 3 > lead * 2); // sprinkle the extras through the wave
+			UnitTypes t = want_extra ? roster_.extra : roster_.lead;
 			unit_t* e = g_.spawn(t, pos, g_.enemy()); if (!e) continue;
 			enemy_ids_.push_back(g_.fn().get_unit_id(e));
-			if (want_ranged) ++made_ranged; else ++made_melee;
+			if (want_extra) ++made_extra; else ++made_lead;
 			placed.push_back(pos);
 		}
 		next_wave_frame_ = g_.frame() + 24 * 8; // next wave only after this one is cleared AND 8 s have passed
